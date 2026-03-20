@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:aufgemoebelt.net)",
+      "WebFetch(domain:xn--aufgembelt-jcb.net)",
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Bash(VITE_SUPABASE_URL=https://placeholder.supabase.co VITE_SUPABASE_ANON_KEY=placeholder npx tsc --noEmit)",
+      "Bash(npm run:*)",
+      "Bash(node scripts/generate-icons.mjs)",
+      "Bash(open \"/Users/neoschaefer/Aufgemoebelt - Inter/supabase/\")",
+      "Bash(open \"/Users/neoschaefer/Aufgemoebelt - Inter/\")",
+      "Bash(open -a Terminal \"/Users/neoschaefer/Aufgemoebelt - Inter/\")",
+      "mcp__Claude_Preview__preview_start"
+    ]
+  }
+}

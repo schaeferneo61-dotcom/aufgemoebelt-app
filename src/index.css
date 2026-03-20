@@ -1,0 +1,79 @@
+@import url('https://fonts.googleapis.com/css2?family=Raleway:wght@400;600;700&family=Open+Sans:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-black text-white font-opensans;
+    margin: 0;
+    padding: 0;
+  }
+
+  /* Scrollbar dark */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #000;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #97999b;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #fff;
+  }
+
+  /* Input autofill dark */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus {
+    -webkit-box-shadow: 0 0 0px 1000px #000 inset;
+    -webkit-text-fill-color: #fff;
+    caret-color: #fff;
+  }
+
+  /* Select dark */
+  select option {
+    background-color: #000;
+    color: #fff;
+  }
+}
+
+@layer utilities {
+  .font-raleway {
+    font-family: 'Raleway', sans-serif;
+  }
+  .font-opensans {
+    font-family: 'Open Sans', sans-serif;
+  }
+
+  /* Animate fade in */
+  .animate-fade-in {
+    animation: fadeIn 0.2s ease-out;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Line clamp */
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}
