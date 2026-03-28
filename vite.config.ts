@@ -18,11 +18,11 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico', 'logo.svg'],
+      includeAssets: ['favicon.ico', 'logo.png'],
       manifest: {
-        name: 'Aufgemöbelt – Projektmanagement',
-        short_name: 'Aufgemöbelt',
-        description: 'Projekt- und Materialverwaltung für Aufgemöbelt',
+        name: 'Warenwirtschaft',
+        short_name: 'Warenwirtschaft',
+        description: 'Warenwirtschaft fuer aufgemoebelt',
         theme_color: '#000000',
         background_color: '#000000',
         display: 'standalone',
@@ -30,20 +30,23 @@ export default defineConfig({
         start_url: '/',
         icons: [
           {
-            src: 'icon-192.svg',
+            src: 'logo.png',
             sizes: '192x192',
-            type: 'image/svg+xml'
+            type: 'image/png'
           },
           {
-            src: 'icon-512.svg',
+            src: 'logo.png',
             sizes: '512x512',
-            type: 'image/svg+xml',
+            type: 'image/png',
             purpose: 'any maskable'
           }
         ]
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // Sofort aktivieren ohne dass Mitarbeiter die App schließen müssen
+        skipWaiting: true,
+        clientsClaim: true,
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,

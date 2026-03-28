@@ -30,11 +30,11 @@ export function LoginPage() {
       <div className="mb-10 flex flex-col items-center gap-4">
         <Logo size={72} />
         <div className="text-center">
-          <h1 className="font-raleway font-semibold text-white tracking-widest uppercase text-xl">
-            Aufgemöbelt
+          <h1 className="font-raleway font-semibold text-white tracking-widest text-xl">
+            aufgemoebelt
           </h1>
           <p className="text-muted font-opensans text-xs mt-1 tracking-wider">
-            Projektmanagement
+            Warenwirtschaft
           </p>
         </div>
       </div>

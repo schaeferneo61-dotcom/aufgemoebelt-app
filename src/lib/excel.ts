@@ -1,62 +1,160 @@
 import * as XLSX from 'xlsx'
+import { supabase } from './supabase'
 import type { Product, Project, ProjectItem } from '../types'
 
 // ── IMPORT ──────────────────────────────────────────────────
 
-/**
- * Parst eine Excel-Datei und gibt die Produkte als Array zurück.
- * Erwartet Spalten: Produkt, Stärke (mm), Maße (mm), m2/Lfm,
- *                   Händler, EK-Preis netto/Stk., VK-Preis netto/Stk., Stk/Palette
- */
+function parseRows(data: Uint8Array): Omit<Product, 'id' | 'created_at' | 'updated_at'>[] {
+  const workbook = XLSX.read(data, { type: 'array', cellStyles: true })
+  const sheet = workbook.Sheets[workbook.SheetNames[0]]
+
+  // Zusammengeführte Zellen expandieren:
+  // Excel speichert nur die erste Zelle einer Zusammenführung mit einem Wert.
+  // Wir kopieren diesen Wert in alle anderen Zellen der Zusammenführung.
+  const merges: XLSX.Range[] = (sheet['!merges'] as XLSX.Range[]) || []
+  for (const merge of merges) {
+    const topLeftRef = XLSX.utils.encode_cell({ r: merge.s.r, c: merge.s.c })
+    const topLeftCell = sheet[topLeftRef]
+    if (!topLeftCell) continue
+    for (let r = merge.s.r; r <= merge.e.r; r++) {
+      for (let c = merge.s.c; c <= merge.e.c; c++) {
+        if (r === merge.s.r && c === merge.s.c) continue
+        const ref = XLSX.utils.encode_cell({ r, c })
+        sheet[ref] = { ...topLeftCell }
+      }
+    }
+  }
+
+  // Rohe Zeilen lesen (mit Spaltenindex, unabhängig von Spaltennamen)
+  const rawRows: (string | number | null)[][] = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    defval: null,
+    raw: false,
+  })
+
+  if (rawRows.length < 2) return []
+
+  const parseNum = (v: unknown): number | null => {
+    if (v === null || v === undefined || v === '') return null
+    // € Symbol, Leerzeichen entfernen, Komma → Punkt
+    const s = String(v).replace(/[€\s]/g, '').replace(',', '.')
+    const n = parseFloat(s)
+    return isNaN(n) ? null : n
+  }
+
+  const toStr = (v: unknown): string | null => {
+    if (v === null || v === undefined || v === '') return null
+    return String(v).trim()
+  }
+
+  // Kopfzeile finden (erste Zeile mit mehr als 2 gefüllten Zellen)
+  let headerRowIdx = 0
+  for (let i = 0; i < Math.min(5, rawRows.length); i++) {
+    const filled = rawRows[i].filter((c) => c !== null && c !== '').length
+    if (filled >= 3) { headerRowIdx = i; break }
+  }
+
+  const headers = rawRows[headerRowIdx].map((h) => toStr(h)?.toLowerCase() ?? '')
+
+  // Spaltenindizes anhand von Schlüsselwörtern finden
+  const findCol = (...keys: string[]) => {
+    for (const key of keys) {
+      const idx = headers.findIndex((h) => h.includes(key))
+      if (idx >= 0) return idx
+    }
+    return -1
+  }
+
+  const colProdukt   = findCol('produkt', 'artikel', 'bezeichnung', 'name', 'material')
+  const colKategorie = findCol('kategorie', 'kategori', 'typ', 'gruppe', 'bereich')
+  const colStaerke   = findCol('stärke', 'staerke', 'dicke', 'stark')
+  const colMasse     = findCol('maße', 'masse', 'maß', 'breite', 'abmessung')
+  const colM2        = findCol('m2', 'm²', 'lfm', 'fläche')
+  const colHaendler  = findCol('händler', 'haendler', 'lieferant', 'hersteller')
+  const colEK        = findCol('ek-preis', 'ek preis', 'einkauf', 'ek netto', 'ek_preis')
+  const colVK        = findCol('vk-preis', 'vk preis', 'verkauf', 'vk netto', 'vk_preis')
+  const colPalette   = findCol('palette', 'stk/palette', 'palette')
+
+  // Erster Spaltenindex (für Kategorien-Erkennung)
+  const firstCol = colProdukt >= 0 ? colProdukt : 0
+
+  let currentKategorie: string | null = null
+  const result: Omit<Product, 'id' | 'created_at' | 'updated_at'>[] = []
+
+  for (let i = headerRowIdx + 1; i < rawRows.length; i++) {
+    const row = rawRows[i]
+    if (!row || row.every((c) => c === null || c === '')) continue
+
+    // Ausgefüllte Zellen zählen
+    const filledCells = row.filter((c) => c !== null && c !== '').length
+    const firstCellVal = toStr(row[firstCol])
+
+    // Explizite Kategorie-Spalte
+    if (colKategorie >= 0 && toStr(row[colKategorie])) {
+      currentKategorie = toStr(row[colKategorie])
+    }
+
+    // Kategorie-Zeile erkennen:
+    // - Nur 1-2 Zellen gefüllt UND keine Preise vorhanden
+    // - ODER der Wert entspricht einer bekannten Kategorie
+    const hatEK = colEK >= 0 && parseNum(row[colEK]) !== null
+    const hatVK = colVK >= 0 && parseNum(row[colVK]) !== null
+    const hatHaendler = colHaendler >= 0 && toStr(row[colHaendler]) !== null
+
+    const istKategorieZeile =
+      firstCellVal &&
+      filledCells <= 2 &&
+      !hatEK && !hatVK
+
+    if (istKategorieZeile && colKategorie < 0) {
+      currentKategorie = firstCellVal
+      continue
+    }
+
+    // Produkt-Zeile
+    if (!firstCellVal) continue
+
+    // Wenn explizite Kategorie-Spalte existiert aber diese Zeile nur 1 Zelle hat → Kategorie
+    if (colKategorie < 0 && filledCells <= 1) {
+      currentKategorie = firstCellVal
+      continue
+    }
+
+    result.push({
+      produkt: firstCellVal,
+      // Bei zusammengeführten Zellen ist der Wert nur in der ersten Zeile – Rest ist null
+      // Deshalb Fallback auf currentKategorie wenn null
+      kategorie: colKategorie >= 0 ? (toStr(row[colKategorie]) ?? currentKategorie) : currentKategorie,
+      staerke_mm: colStaerke >= 0 ? toStr(row[colStaerke]) : null,
+      masse_mm: colMasse >= 0 ? toStr(row[colMasse]) : null,
+      m2_lfm: colM2 >= 0 ? toStr(row[colM2]) : null,
+      haendler: hatHaendler ? toStr(row[colHaendler]) : null,
+      ek_preis: colEK >= 0 ? parseNum(row[colEK]) : null,
+      vk_preis: colVK >= 0 ? parseNum(row[colVK]) : null,
+      stk_palette: colPalette >= 0 ? toStr(row[colPalette]) : null,
+      bestand: 0,
+    })
+  }
+
+  return result.filter((p) => p.produkt.length > 0)
+}
+
+export async function parseProductExcelFromUrl(url: string): Promise<Omit<Product, 'id' | 'created_at' | 'updated_at'>[]> {
+  const downloadUrl = url.includes('download=1') ? url : url + (url.includes('?') ? '&' : '?') + 'download=1'
+  const response = await fetch(downloadUrl)
+  if (!response.ok) throw new Error('Datei konnte nicht geladen werden (Status ' + response.status + ')')
+  const buffer = await response.arrayBuffer()
+  const data = new Uint8Array(buffer)
+  return parseRows(data)
+}
+
 export function parseProductExcel(file: File): Promise<Omit<Product, 'id' | 'created_at' | 'updated_at'>[]> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = (e) => {
       try {
         const data = new Uint8Array(e.target!.result as ArrayBuffer)
-        const workbook = XLSX.read(data, { type: 'array' })
-        const sheet = workbook.Sheets[workbook.SheetNames[0]]
-        const rows: Record<string, string | number | null>[] = XLSX.utils.sheet_to_json(sheet, {
-          defval: null,
-        })
-
-        const products = rows
-          .filter((row) => row['Produkt'] || row['produkt'] || row['PRODUKT'])
-          .map((row) => {
-            const get = (...keys: string[]) => {
-              for (const k of keys) if (row[k] !== undefined && row[k] !== null) return row[k]
-              return null
-            }
-            const parseNum = (v: unknown) => {
-              if (v === null || v === undefined || v === '') return null
-              const n = parseFloat(String(v).replace(',', '.'))
-              return isNaN(n) ? null : n
-            }
-
-            return {
-              produkt: String(get('Produkt', 'produkt', 'PRODUKT') ?? '').trim(),
-              staerke_mm: get('Stärke (mm)', 'Staerke (mm)', 'Stärke', 'staerke_mm') !== null
-                ? String(get('Stärke (mm)', 'Staerke (mm)', 'Stärke', 'staerke_mm'))
-                : null,
-              masse_mm: get('Maße (mm)', 'Masse (mm)', 'Maße', 'masse_mm') !== null
-                ? String(get('Maße (mm)', 'Masse (mm)', 'Maße', 'masse_mm'))
-                : null,
-              m2_lfm: get('m2/Lfm', 'm²/Lfm', 'm2_lfm') !== null
-                ? String(get('m2/Lfm', 'm²/Lfm', 'm2_lfm'))
-                : null,
-              haendler: get('Händler', 'Haendler', 'haendler') !== null
-                ? String(get('Händler', 'Haendler', 'haendler'))
-                : null,
-              ek_preis: parseNum(get('EK-Preis netto/Stk.', 'EK-Preis', 'ek_preis')),
-              vk_preis: parseNum(get('VK-Preis netto/Stk.', 'VK-Preis', 'vk_preis')),
-              stk_palette: get('Stk/Palette', 'Stk./Palette', 'stk_palette') !== null
-                ? String(get('Stk/Palette', 'Stk./Palette', 'stk_palette'))
-                : null,
-              bestand: 0,
-            }
-          })
-          .filter((p) => p.produkt.length > 0)
-
+        const products = parseRows(data)
         resolve(products)
       } catch (err) {
         reject(new Error('Excel-Datei konnte nicht gelesen werden: ' + String(err)))
@@ -67,125 +165,130 @@ export function parseProductExcel(file: File): Promise<Omit<Product, 'id' | 'cre
   })
 }
 
-// ── EXPORT ──────────────────────────────────────────────────
+// ── Storage Upload ────────────────────────────────────────────
 
-interface ExportData {
+async function uploadToStorage(workbook: XLSX.WorkBook, filename: string): Promise<string> {
+  const buf: number[] = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' })
+  const blob = new Blob([new Uint8Array(buf)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  const file = new File([blob], filename)
+  const { error } = await supabase.storage
+    .from('exports')
+    .upload(filename, file, { upsert: true, contentType: file.type })
+  if (error) throw new Error('Speichern fehlgeschlagen: ' + error.message)
+  const { data } = supabase.storage.from('exports').getPublicUrl(filename)
+  return data.publicUrl
+}
+
+export interface ExportData {
   project: Project
   items: (ProjectItem & { product: Product })[]
   creatorName?: string
 }
 
-/**
- * Erstellt eine Excel-Datei mit Projektübersicht und Positionen.
- */
-export function exportProjectToExcel(data: ExportData): void {
-  const workbook = XLSX.utils.book_new()
-
-  // ── Tabellenblatt 1: Projektinfo ──
-  const infoRows = [
-    ['Projektname', data.project.name],
-    ['Beschreibung', data.project.beschreibung ?? ''],
-    ['Status', data.project.status],
-    ['Erstellt von', data.creatorName ?? ''],
-    ['Erstellt am', new Date(data.project.created_at).toLocaleDateString('de-AT')],
-    ['Exportiert am', new Date().toLocaleDateString('de-AT')],
-  ]
-  const infoSheet = XLSX.utils.aoa_to_sheet(infoRows)
-  infoSheet['!cols'] = [{ wch: 18 }, { wch: 40 }]
-  XLSX.utils.book_append_sheet(workbook, infoSheet, 'Projektinfo')
-
-  // ── Tabellenblatt 2: Positionen ──
-  const header = [
-    'Produkt',
-    'Stärke (mm)',
-    'Maße (mm)',
-    'm²/Lfm',
-    'Händler',
-    'Menge',
-    'EK-Preis netto/Stk.',
-    'VK-Preis netto/Stk.',
-    'Stk/Palette',
-    'Notiz',
-    'Hinzugefügt am',
-  ]
-
-  const itemRows = data.items.map((item) => [
-    item.product?.produkt ?? '',
-    item.product?.staerke_mm ?? '',
-    item.product?.masse_mm ?? '',
-    item.product?.m2_lfm ?? '',
-    item.product?.haendler ?? '',
-    item.menge,
-    item.product?.ek_preis ?? '',
-    item.product?.vk_preis ?? '',
-    item.product?.stk_palette ?? '',
-    item.notiz ?? '',
-    new Date(item.created_at).toLocaleDateString('de-AT'),
-  ])
-
-  // Gesamtsummen
-  const totalEK = data.items.reduce((sum, i) => sum + (i.menge * (i.product?.ek_preis ?? 0)), 0)
-  const totalVK = data.items.reduce((sum, i) => sum + (i.menge * (i.product?.vk_preis ?? 0)), 0)
-
-  const posSheet = XLSX.utils.aoa_to_sheet([
-    header,
-    ...itemRows,
-    [],
-    ['', '', '', '', 'GESAMT', '', totalEK.toFixed(2), totalVK.toFixed(2)],
-  ])
-  posSheet['!cols'] = [
-    { wch: 30 }, { wch: 12 }, { wch: 14 }, { wch: 10 },
-    { wch: 16 }, { wch: 8 }, { wch: 20 }, { wch: 20 },
-    { wch: 12 }, { wch: 25 }, { wch: 14 },
-  ]
-  XLSX.utils.book_append_sheet(workbook, posSheet, 'Positionen')
-
-  // Download triggern
-  const filename = `Aufgemoebelt_${data.project.name.replace(/[^a-zA-Z0-9äöüÄÖÜß]/g, '_')}_${new Date().toISOString().slice(0, 10)}.xlsx`
-  XLSX.writeFile(workbook, filename)
+function sanitizeFilename(name: string): string {
+  return name.replace(/[^\wäöüÄÖÜß\s-]/g, '').replace(/\s+/g, '_').substring(0, 50)
 }
 
-/**
- * Exportiert alle Projekte in eine Übersichts-Excel-Datei.
- */
-export function exportAllProjectsToExcel(
-  projects: Project[],
-  allItems: (ProjectItem & { product: Product })[],
-): void {
-  const workbook = XLSX.utils.book_new()
+function S(ws: XLSX.WorkSheet, ref: string, style: object) {
+  if (!ws[ref]) ws[ref] = { v: '', t: 's' }
+  ws[ref].s = style
+}
 
-  // ── Übersicht ──
-  const overviewHeader = ['Projektname', 'Status', 'Erstellt am', 'Anzahl Positionen']
-  const overviewRows = projects.map((p) => [
-    p.name,
-    p.status,
-    new Date(p.created_at).toLocaleDateString('de-AT'),
-    allItems.filter((i) => i.project_id === p.id).length,
+export async function exportProjectToExcel(data: ExportData): Promise<string> {
+  const wb = XLSX.utils.book_new()
+  const rows: (string | number)[][] = []
+
+  // Titel
+  rows.push(['aufgemoebelt', '', '', '', '', '', '', '', ''])
+  rows.push([data.project.name, '', '', '', '', '', '', '', ''])
+  rows.push([data.project.beschreibung ?? '', '', '', '', '', '', '', '', ''])
+  rows.push([
+    `Status: ${data.project.status.charAt(0).toUpperCase() + data.project.status.slice(1)}`,
+    '', '',
+    data.project.enddatum ? `Enddatum: ${new Date(data.project.enddatum).toLocaleDateString('de-AT')}` : '',
+    '', '',
+    `Exportiert: ${new Date().toLocaleDateString('de-AT')}`,
+    '', ''
   ])
-  const overviewSheet = XLSX.utils.aoa_to_sheet([overviewHeader, ...overviewRows])
-  overviewSheet['!cols'] = [{ wch: 30 }, { wch: 14 }, { wch: 14 }, { wch: 18 }]
-  XLSX.utils.book_append_sheet(workbook, overviewSheet, 'Übersicht')
+  rows.push([data.creatorName ? `Erstellt von: ${data.creatorName}` : '', '', '', '', '', '', '', '', ''])
+  rows.push([]) // Leerzeile
 
-  // ── Pro Projekt ein Blatt ──
-  for (const project of projects) {
-    const items = allItems.filter((i) => i.project_id === project.id)
-    if (items.length === 0) continue
+  // Header
+  const header = ['Produkt', 'Kategorie', 'Stärke', 'Maße', 'Händler', 'Menge', 'EK netto/Stk', 'VK netto/Stk', 'Gesamt VK']
+  rows.push(header)
+  const headerRowIdx = rows.length - 1
 
-    const header = ['Produkt', 'Menge', 'EK-Preis netto/Stk.', 'VK-Preis netto/Stk.', 'Notiz']
-    const rows = items.map((i) => [
-      i.product?.produkt ?? '',
-      i.menge,
-      i.product?.ek_preis ?? '',
-      i.product?.vk_preis ?? '',
-      i.notiz ?? '',
+  // Daten
+  for (const item of data.items) {
+    rows.push([
+      item.product?.produkt ?? '(gelöscht)',
+      item.product?.kategorie ?? '',
+      item.product?.staerke_mm ?? '',
+      item.product?.masse_mm ?? '',
+      item.product?.haendler ?? '',
+      item.menge,
+      item.product?.ek_preis ?? '',
+      item.product?.vk_preis ?? '',
+      item.menge * (item.product?.vk_preis ?? 0),
     ])
-    const sheet = XLSX.utils.aoa_to_sheet([header, ...rows])
-    sheet['!cols'] = [{ wch: 30 }, { wch: 8 }, { wch: 20 }, { wch: 20 }, { wch: 25 }]
-    // Blattname max 31 Zeichen
-    const sheetName = project.name.slice(0, 31)
-    XLSX.utils.book_append_sheet(workbook, sheet, sheetName)
   }
 
-  const filename = `Aufgemoebelt_Alle_Projekte_${new Date().toISOString().slice(0, 10)}.xlsx`
-  XLSX.writeFile(workbook, filename)
+  rows.push([])
+  const totalEK = data.items.reduce((s, i) => s + i.menge * (i.product?.ek_preis ?? 0), 0)
+  const totalVK = data.items.reduce((s, i) => s + i.menge * (i.product?.vk_preis ?? 0), 0)
+  rows.push(['', '', '', '', 'GESAMT', '', totalEK, totalVK, totalVK])
+
+  const ws = XLSX.utils.aoa_to_sheet(rows)
+  ws['!cols'] = [{ wch: 32 }, { wch: 22 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 7 }, { wch: 16 }, { wch: 16 }, { wch: 14 }]
+
+  // Stile
+  const BLACK = '000000', WHITE = 'FFFFFF', GREY = '111111', LIGHTGREY = '1A1A1A', MUTED = '888888'
+  const titleStyle = { font: { bold: true, color: { rgb: WHITE }, sz: 18, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: BLACK } } }
+  const subtitleStyle = { font: { bold: true, color: { rgb: WHITE }, sz: 13, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: BLACK } } }
+  const metaStyle = { font: { color: { rgb: MUTED }, sz: 9, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: BLACK } } }
+  const emptyStyle = { fill: { patternType: 'solid', fgColor: { rgb: BLACK } } }
+  const headerStyle = { font: { bold: true, color: { rgb: WHITE }, sz: 10, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: GREY } }, alignment: { horizontal: 'left' } }
+  const cellStyle = { font: { color: { rgb: WHITE }, sz: 10, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: LIGHTGREY } }, alignment: { horizontal: 'left' } }
+  const numStyle = { font: { color: { rgb: WHITE }, sz: 10, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: LIGHTGREY } }, alignment: { horizontal: 'right' } }
+  const totalStyle = { font: { bold: true, color: { rgb: WHITE }, sz: 10, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: GREY } }, alignment: { horizontal: 'right' } }
+
+  const cols = 9
+  const colL = (i: number) => String.fromCharCode(65 + i)
+
+  // Titelzeilen
+  for (let c = 0; c < cols; c++) S(ws, `${colL(c)}1`, titleStyle)
+  for (let c = 0; c < cols; c++) S(ws, `${colL(c)}2`, subtitleStyle)
+  for (let c = 0; c < cols; c++) S(ws, `${colL(c)}3`, metaStyle)
+  for (let c = 0; c < cols; c++) S(ws, `${colL(c)}4`, metaStyle)
+  for (let c = 0; c < cols; c++) S(ws, `${colL(c)}5`, metaStyle)
+  for (let c = 0; c < cols; c++) S(ws, `${colL(c)}6`, emptyStyle)
+
+  // Header
+  for (let c = 0; c < cols; c++) S(ws, `${colL(c)}${headerRowIdx + 1}`, headerStyle)
+
+  // Datenzeilen
+  for (let r = headerRowIdx + 2; r <= rows.length; r++) {
+    const row = rows[r - 1]
+    if (!row || row.length === 0) continue
+    const isTotal = String(row[4] ?? '') === 'GESAMT'
+    if (isTotal) {
+      for (let c = 0; c < cols; c++) S(ws, `${colL(c)}${r}`, totalStyle)
+    } else {
+      for (let c = 0; c < cols; c++) {
+        S(ws, `${colL(c)}${r}`, c >= 5 ? numStyle : cellStyle)
+      }
+    }
+  }
+
+  // Merges für Titel
+  ws['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 8 } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: 8 } },
+    { s: { r: 2, c: 0 }, e: { r: 2, c: 8 } },
+  ]
+
+  XLSX.utils.book_append_sheet(wb, ws, data.project.name.substring(0, 31))
+
+  const filename = sanitizeFilename(data.project.name) + '_.xlsx'
+  return uploadToStorage(wb, filename)
 }

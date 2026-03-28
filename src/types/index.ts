@@ -1,6 +1,7 @@
 export interface Product {
   id: string
   produkt: string
+  kategorie: string | null
   staerke_mm: string | null
   masse_mm: string | null
   m2_lfm: string | null
@@ -19,6 +20,8 @@ export interface Project {
   beschreibung: string | null
   status: 'aktiv' | 'abgeschlossen' | 'pausiert'
   erstellt_von: string | null
+  enddatum: string | null
+  prosonata_id: string | null
   created_at: string
   updated_at: string
 }
@@ -38,7 +41,8 @@ export interface ProjectItem {
 export interface Profile {
   id: string
   name: string | null
-  rolle: 'admin' | 'mitarbeiter'
+  rolle: 'admin' | 'projektleiter' | 'mitarbeiter'
+  email?: string | null
   created_at: string
 }
 

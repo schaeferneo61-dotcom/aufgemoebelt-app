@@ -9,9 +9,15 @@ import type { Project, ProjectItem, Product } from '../types'
 
 type ItemWithProduct = ProjectItem & { product: Product }
 
+function canEdit(item: ItemWithProduct, userId: string | undefined, isAdminOrProjektleiter: boolean): boolean {
+  if (isAdminOrProjektleiter) return true
+  if (!userId || item.hinzugefuegt_von !== userId) return false
+  return Date.now() - new Date(item.created_at).getTime() < 10 * 60 * 1000
+}
+
 export function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>()
-  const { isAdmin, profile } = useAuth()
+  const { isAdmin, isAdminOrProjektleiter, profile, user } = useAuth()
   const [project, setProject] = useState<Project | null>(null)
   const [items, setItems] = useState<ItemWithProduct[]>([])
   const [loading, setLoading] = useState(true)
@@ -40,7 +46,6 @@ export function ProjectDetailPage() {
 
   useEffect(() => {
     load()
-
     const channel = supabase
       .channel(`project-${id}`)
       .on(
@@ -49,7 +54,6 @@ export function ProjectDetailPage() {
         load,
       )
       .subscribe()
-
     return () => { supabase.removeChannel(channel) }
   }, [id, load])
 
@@ -69,12 +73,37 @@ export function ProjectDetailPage() {
     load()
   }
 
-  const handleExport = () => {
+  const [exporting, setExporting] = useState(false)
+  const [exportUrl, setExportUrl] = useState<string | null>(null)
+  const [hasNewChanges, setHasNewChanges] = useState(false)
+
+  useEffect(() => {
+    if (!project || items.length === 0) return
+    const key = `export_${project.id}`
+    const lastDl = localStorage.getItem(key)
+    if (!lastDl) { setHasNewChanges(false); return }
+    const lastTs = new Date(lastDl).getTime()
+    const newest = Math.max(...items.map(i => new Date(i.updated_at ?? i.created_at).getTime()))
+    setHasNewChanges(newest > lastTs)
+  }, [project, items])
+
+  const handleExport = async () => {
     if (!project) return
-    exportProjectToExcel({ project, items, creatorName: profile?.name ?? undefined })
+    setExporting(true)
+    setExportUrl(null)
+    try {
+      const url = await exportProjectToExcel({ project, items, creatorName: profile?.name ?? undefined })
+      setExportUrl(url)
+      localStorage.setItem(`export_${project.id}`, new Date().toISOString())
+      setHasNewChanges(false)
+      window.open(url, '_blank')
+    } catch (e) {
+      alert('Export fehlgeschlagen: ' + String(e))
+    } finally {
+      setExporting(false)
+    }
   }
 
-  // Gesamtwert berechnen
   const totalVK = items.reduce((sum, i) => sum + i.menge * (i.product?.vk_preis ?? 0), 0)
   const totalEK = items.reduce((sum, i) => sum + i.menge * (i.product?.ek_preis ?? 0), 0)
 
@@ -90,7 +119,8 @@ export function ProjectDetailPage() {
     return (
       <div className="min-h-screen bg-black">
         <Header />
-        <main className="max-w-6xl mx-auto px-4 pt-24 pb-16 text-center">
+        <main className="max-w-screen-lg mx-auto px-4 pb-16 text-center"
+          style={{ paddingTop: 'calc(env(safe-area-inset-top) + 5rem)' }}>
           <p className="text-muted font-opensans">Projekt nicht gefunden.</p>
           <Link to="/" className="text-white underline text-sm font-opensans mt-4 block">← Zurück</Link>
         </main>
@@ -101,49 +131,67 @@ export function ProjectDetailPage() {
   return (
     <div className="min-h-screen bg-black">
       <Header />
-      <main className="max-w-6xl mx-auto px-4 pt-24 pb-16">
+      <main
+        className="max-w-screen-lg mx-auto px-4 pb-16"
+        style={{ paddingTop: 'calc(env(safe-area-inset-top) + 4rem)' }}
+      >
 
         {/* Breadcrumb */}
-        <Link to="/" className="text-muted text-xs font-raleway uppercase tracking-widest hover:text-white transition-colors">
-          ← Alle Projekte
-        </Link>
+        <div className="mt-6">
+          <Link to="/" className="text-muted text-xs font-raleway uppercase tracking-widest hover:text-white transition-colors">
+            ← Warenwirtschaft
+          </Link>
+        </div>
 
         {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mt-4 mb-10 border-b border-border pb-8">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mt-3 mb-8 border-b border-border pb-6">
           <div>
-            <h1 className="font-raleway font-semibold text-white text-3xl uppercase tracking-widest">
+            <h1 className="font-raleway font-semibold text-white text-2xl uppercase tracking-widest">
               {project.name}
             </h1>
             {project.beschreibung && (
               <p className="text-muted font-opensans text-sm mt-1">{project.beschreibung}</p>
             )}
-            <p className="text-muted font-opensans text-xs mt-2">
-              Status: <span className="text-white">{project.status.charAt(0).toUpperCase() + project.status.slice(1)}</span>
-              {' · '}
-              Erstellt: <span className="text-white">{new Date(project.created_at).toLocaleDateString('de-AT')}</span>
-            </p>
+            {isAdminOrProjektleiter && (
+              <p className="text-muted font-opensans text-xs mt-2">
+                Status: <span className="text-white">{project.status.charAt(0).toUpperCase() + project.status.slice(1)}</span>
+                {' · '}
+                Erstellt: <span className="text-white">{new Date(project.created_at).toLocaleDateString('de-AT')}</span>
+              </p>
+            )}
           </div>
-          <div className="flex gap-3 flex-wrap self-start sm:self-auto">
+          <div className="flex gap-2 flex-wrap self-start sm:self-auto">
             {isAdmin && (
-              <button
-                onClick={handleExport}
-                className="border border-border text-white px-5 py-3 font-raleway text-xs uppercase tracking-widest hover:bg-white hover:text-black transition-colors"
-              >
-                Excel Export
-              </button>
+              <div className="flex flex-col items-end gap-1">
+                <button
+                  onClick={handleExport}
+                  disabled={exporting}
+                  className="border border-border text-white px-4 py-2.5 font-raleway text-xs uppercase tracking-widest hover:bg-white hover:text-black transition-colors disabled:opacity-50"
+                >
+                  {exporting ? 'Speichern…' : 'Excel Export'}
+                </button>
+                {hasNewChanges && (
+                  <span className="text-xs text-yellow-400 font-opensans">⚠ Neue Änderungen – erneut herunterladen</span>
+                )}
+                {exportUrl && !hasNewChanges && (
+                  <a href={exportUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-green-400 font-opensans hover:underline">
+                    ↓ Datei herunterladen
+                  </a>
+                )}
+              </div>
             )}
             <button
               onClick={() => setAddOpen(true)}
-              className="bg-white text-black px-6 py-3 font-raleway text-xs uppercase tracking-widest hover:bg-muted transition-colors"
+              className="bg-white text-black px-5 py-2.5 font-raleway text-xs uppercase tracking-widest hover:bg-muted transition-colors"
             >
-              + Produkt hinzufügen
+              + Produkt
             </button>
           </div>
         </div>
 
         {/* Positionen */}
         {items.length === 0 ? (
-          <div className="border border-border p-16 text-center">
+          <div className="border border-border p-12 text-center">
             <p className="text-muted font-opensans text-sm mb-4">
               Noch keine Produkte in diesem Projekt.
             </p>
@@ -157,7 +205,7 @@ export function ProjectDetailPage() {
         ) : (
           <>
             {/* Tabellen-Header (Desktop) */}
-            <div className="hidden md:grid grid-cols-[2fr_1fr_1fr_1fr_1fr_auto] gap-4 px-4 py-3 border-b border-border text-xs font-raleway uppercase tracking-widest text-muted mb-0">
+            <div className="hidden md:grid grid-cols-[2fr_1fr_1fr_1fr_1fr_auto] gap-4 px-4 py-3 border-b border-border text-xs font-raleway uppercase tracking-widest text-muted">
               <span>Produkt</span>
               <span>Menge</span>
               <span>EK netto</span>
@@ -166,13 +214,12 @@ export function ProjectDetailPage() {
               <span></span>
             </div>
 
-            {/* Items */}
             <div className="divide-y divide-border border border-border border-t-0">
               {items.map((item) => (
                 <ItemRow
                   key={item.id}
                   item={item}
-                  isAdmin={isAdmin}
+                  canEditItem={canEdit(item, user?.id, isAdminOrProjektleiter)}
                   deletingId={deletingId}
                   editingItem={editingItem}
                   editMenge={editMenge}
@@ -203,10 +250,10 @@ export function ProjectDetailPage() {
         )}
 
         {/* Echtzeit-Hinweis */}
-        <div className="mt-8 flex items-center gap-2">
+        <div className="mt-6 flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
           <p className="text-xs text-muted font-opensans">
-            Echtzeit-Sync aktiv – Änderungen sind sofort für alle sichtbar
+            Echtzeit-Sync aktiv – Änderungen sofort für alle sichtbar
           </p>
         </div>
       </main>
@@ -226,7 +273,7 @@ export function ProjectDetailPage() {
 
 function ItemRow({
   item,
-  isAdmin,
+  canEditItem,
   deletingId,
   editingItem,
   editMenge,
@@ -237,7 +284,7 @@ function ItemRow({
   onEditMengeChange,
 }: {
   item: ItemWithProduct
-  isAdmin: boolean
+  canEditItem: boolean
   deletingId: string | null
   editingItem: string | null
   editMenge: string
@@ -256,13 +303,14 @@ function ItemRow({
       <div className="md:hidden space-y-2">
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
-            <p className="font-opensans text-sm text-white font-medium truncate">{item.product?.produkt}</p>
+            <p className="font-opensans text-sm text-white font-medium truncate">{item.product?.produkt ?? '(Produkt nicht mehr vorhanden)'}</p>
             <p className="text-xs text-muted font-opensans">
               {[item.product?.staerke_mm && `${item.product.staerke_mm} mm`, item.product?.masse_mm].filter(Boolean).join(' · ')}
             </p>
             {item.notiz && <p className="text-xs text-muted font-opensans italic mt-0.5">{item.notiz}</p>}
           </div>
-          {(isAdmin || true) && (
+          {/* Löschen nur wenn canEditItem */}
+          {canEditItem && (
             <button
               onClick={() => onDelete(item.id)}
               disabled={deletingId === item.id}
@@ -283,7 +331,7 @@ function ItemRow({
       {/* Desktop Layout */}
       <div className="hidden md:grid grid-cols-[2fr_1fr_1fr_1fr_1fr_auto] gap-4 items-center">
         <div className="min-w-0">
-          <p className="font-opensans text-sm text-white font-medium truncate">{item.product?.produkt}</p>
+          <p className="font-opensans text-sm text-white font-medium truncate">{item.product?.produkt ?? '(Produkt nicht mehr vorhanden)'}</p>
           <p className="text-xs text-muted font-opensans">
             {[
               item.product?.staerke_mm && `${item.product.staerke_mm} mm`,
@@ -323,23 +371,27 @@ function ItemRow({
         </div>
 
         <span className="font-opensans text-sm text-muted">
-          {item.product?.ek_preis !== null ? `€ ${item.product!.ek_preis!.toFixed(2)}` : '–'}
+          {item.product?.ek_preis != null ? `€ ${item.product.ek_preis.toFixed(2)}` : '–'}
         </span>
         <span className="font-opensans text-sm text-muted">
-          {item.product?.vk_preis !== null ? `€ ${item.product!.vk_preis!.toFixed(2)}` : '–'}
+          {item.product?.vk_preis != null ? `€ ${item.product.vk_preis.toFixed(2)}` : '–'}
         </span>
         <span className="font-opensans text-sm text-white font-medium">
-          {item.product?.vk_preis !== null ? `€ ${gesamtVK.toFixed(2)}` : '–'}
+          {item.product?.vk_preis != null ? `€ ${gesamtVK.toFixed(2)}` : '–'}
         </span>
 
-        <button
-          onClick={() => onDelete(item.id)}
-          disabled={deletingId === item.id}
-          className="text-muted hover:text-red-400 transition-colors text-xl leading-none"
-          title="Entfernen"
-        >
-          ×
-        </button>
+        {canEditItem ? (
+          <button
+            onClick={() => onDelete(item.id)}
+            disabled={deletingId === item.id}
+            className="text-muted hover:text-red-400 transition-colors text-xl leading-none"
+            title="Entfernen"
+          >
+            ×
+          </button>
+        ) : (
+          <span />
+        )}
       </div>
     </div>
   )

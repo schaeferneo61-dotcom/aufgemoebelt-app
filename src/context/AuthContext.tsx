@@ -9,6 +9,8 @@ interface AuthContextType {
   profile: Profile | null
   loading: boolean
   isAdmin: boolean
+  isProjektleiter: boolean
+  isAdminOrProjektleiter: boolean
   signIn: (email: string, password: string) => Promise<{ error: string | null }>
   signOut: () => Promise<void>
 }
@@ -58,12 +60,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await supabase.auth.signOut()
   }
 
+  const isAdmin = profile?.rolle === 'admin'
+  const isProjektleiter = profile?.rolle === 'projektleiter'
+  const isAdminOrProjektleiter = isAdmin || isProjektleiter
+
   const value: AuthContextType = {
     user,
     session,
     profile,
     loading,
-    isAdmin: profile?.rolle === 'admin',
+    isAdmin,
+    isProjektleiter,
+    isAdminOrProjektleiter,
     signIn,
     signOut,
   }
