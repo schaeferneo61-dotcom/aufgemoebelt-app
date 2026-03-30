@@ -12,6 +12,7 @@ interface ProSonataProject {
   projectStatus: number
   activeStatus: number
   projectNo?: string
+  customerName?: string
   [key: string]: unknown
 }
 
@@ -27,37 +28,10 @@ export function mapProSonataStatus(p: ProSonataProject): 'aktiv' | 'pausiert' | 
   return 'aktiv'
 }
 
-function isInternValue(value: string): boolean {
-  return /\(\s*intern\s*\)/i.test(value)
-}
-
-function containsIntern(obj: unknown, depth = 0): boolean {
-  if (depth > 6) return false
-  if (typeof obj === 'string') return isInternValue(obj)
-  if (typeof obj !== 'object' || obj === null) return false
-  for (const val of Object.values(obj as Record<string, unknown>)) {
-    if (containsIntern(val, depth + 1)) return true
-  }
-  return false
-}
-
-const TOP_LEVEL_SKIP = new Set([
-  'projectid', 'projectname', 'projectno', 'projectnumber',
-  'projectdatestart', 'projectdateend', 'projectdatefrom', 'projectdateto',
-  'projectstatus', 'activestatus',
-])
-
+// Intern = Firma/Gruppe in ProSonata enthält "(intern)" (z.B. "aufgemoebelt (intern)")
 export function mapProSonataTyp(raw: ProSonataProject): 'intern' | 'extern' {
-  const projektName = String((raw as Record<string, unknown>).projectName ?? '')
-
-  for (const [key, value] of Object.entries(raw)) {
-    if (TOP_LEVEL_SKIP.has(key.toLowerCase())) continue
-    if (containsIntern(value, 0)) {
-      console.log(`[ProSonata] ✓ intern via "${key}" =`, JSON.stringify(value).substring(0, 100), '| Projekt:', projektName)
-      return 'intern'
-    }
-  }
-  return 'extern'
+  const customerName = raw.customerName ?? ''
+  return /\(\s*intern\s*\)/i.test(customerName) ? 'intern' : 'extern'
 }
 
 export function shouldAutoSync(): boolean {
@@ -66,36 +40,57 @@ export function shouldAutoSync(): boolean {
   return Date.now() - parseInt(lastSync) > SYNC_COOLDOWN_MS
 }
 
+async function fetchAllPages(apiKey: string, extraParams = ''): Promise<ProSonataProject[]> {
+  const results: ProSonataProject[] = []
+  let page = 1
+  let lastPage = 1
+  const headers = {
+    'X-API-Key': apiKey.trim(),
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  }
+  do {
+    const res = await fetch(
+      `https://aufgemoebelt.prosonata.software/api/v1/projects?page=${page}&per_page=100${extraParams}`,
+      { headers }
+    )
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '')
+      throw new Error(`ProSonata API Fehler ${res.status}: ${errText || res.statusText}`)
+    }
+    const json = await res.json()
+    results.push(...(json.data ?? []))
+    lastPage = json.meta?.pagination?.last_page ?? 1
+    page++
+  } while (page <= lastPage)
+  return results
+}
+
 export async function syncProSonata(apiKey: string): Promise<{ count: number; error?: string }> {
   try {
+    // Aktive Projekte (Standard-Aufruf, kein Status-Filter = projectStatus 1)
+    const activeProjects = await fetchAllPages(apiKey)
+
+    // Inaktive Projekte (projectStatus=0) – hier sind die internen aufgemoebelt-Projekte
+    const inactiveProjects = await fetchAllPages(apiKey, '&projectStatus=0')
+
+    // Zusammenführen und nach projectID deduplizieren
+    const seen = new Set<string>()
     const allProjects: ProSonataProject[] = []
-    let page = 1
-    let lastPage = 1
-
-    do {
-      // Statt direktem Fetch → Supabase Edge Function als Proxy
-      const { data, error } = await supabase.functions.invoke('prosonata-sync', {
-        body: { apiKey: apiKey.trim(), page },
-      })
-
-      if (error) throw new Error('Verbindungsfehler: ' + error.message)
-      if (data?.error) throw new Error(data.error)
-
-      allProjects.push(...(data?.data ?? []))
-      lastPage = data?.meta?.pagination?.last_page ?? 1
-      page++
-    } while (page <= lastPage)
-
-    if (allProjects.length > 0) {
-      console.log('[ProSonata] Felder des ersten Projekts:', Object.keys(allProjects[0]))
-      console.log('[ProSonata] Erstes Projekt (komplett):', JSON.parse(JSON.stringify(allProjects[0])))
-      const internCount = allProjects.filter(p => mapProSonataTyp(p) === 'intern').length
-      console.log(`[ProSonata] Intern erkannt: ${internCount} / ${allProjects.length}`)
+    for (const p of [...activeProjects, ...inactiveProjects]) {
+      const id = String(p.projectID)
+      if (!seen.has(id)) {
+        seen.add(id)
+        allProjects.push(p)
+      }
     }
 
     if (allProjects.length === 0) {
       return { count: 0, error: 'Keine Projekte in ProSonata gefunden.' }
     }
+
+    const internCount = allProjects.filter(p => mapProSonataTyp(p) === 'intern').length
+    console.log(`[ProSonata] Gesamt: ${allProjects.length} | Intern: ${internCount} | Extern: ${allProjects.length - internCount}`)
 
     const upsertData = allProjects.map((p) => ({
       name: p.projectName,
