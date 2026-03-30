@@ -2,11 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Modal } from './Modal'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
-import { parseProductExcelFromUrl } from '../lib/excel'
 import type { Product } from '../types'
-
-const STORAGE_BUCKET = 'produktliste'
-const STORAGE_FILE = 'produktliste.xlsx'
 
 const KATEGORIEN_REIHENFOLGE = [
   'Holz: Latten, Staffeln & Platten',
@@ -16,6 +12,30 @@ const KATEGORIEN_REIHENFOLGE = [
   'Stahl',
   'Alu',
 ]
+
+// Modul-level Cache — wird NICHT bei jedem Modal-Open neu geladen
+let _productsCache: Product[] = []
+let _cacheTimestamp = 0
+const CACHE_TTL = 3 * 60 * 1000 // 3 Minuten
+
+// Fuzzy-Suche: Groß-/Kleinschreibung egal, Umlaute egal, kleine Tippfehler tolerant
+function fuzzyMatch(text: string, query: string): boolean {
+  if (!query) return true
+  const norm = (s: string) =>
+    s.toLowerCase()
+      .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue')
+      .replace(/ß/g, 'ss').replace(/[^a-z0-9]/g, '')
+  const t = norm(text)
+  const q = norm(query)
+  if (!q) return true
+  if (t.includes(q)) return true
+  // Subsequenz-Match für Tippfehler
+  let qi = 0
+  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+    if (t[ti] === q[qi]) qi++
+  }
+  return qi === q.length
+}
 
 interface Props {
   open: boolean
@@ -29,7 +49,7 @@ type View = 'suche' | 'kategorien' | 'produkte'
 
 export function AddProductModal({ open, onClose, projectId, onAdded, existingProductIds = [] }: Props) {
   const { user } = useAuth()
-  const [products, setProducts] = useState<Product[]>([])
+  const [products, setProducts] = useState<Product[]>(_productsCache)
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<Product | null>(null)
   const [menge, setMenge] = useState('1')
@@ -39,7 +59,6 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
   const [error, setError] = useState<string | null>(null)
   const [view, setView] = useState<View>('suche')
   const [selectedKategorie, setSelectedKategorie] = useState<string | null>(null)
-  const [syncStatus, setSyncStatus] = useState<string | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -55,52 +74,31 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
       setError(null)
       setView('suche')
       setSelectedKategorie(null)
-      setSyncStatus(null)
     }
   }, [open])
 
   async function loadProducts() {
-    setLoading(true)
-    setSyncStatus(null)
-
-    // Versuche immer zuerst die aktuelle Excel aus Supabase Storage zu lesen
-    try {
-      const { data: urlData } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(STORAGE_FILE)
-      const publicUrl = urlData.publicUrl
-
-      setSyncStatus('Lade aktuelle Produktliste...')
-      const parsed = await parseProductExcelFromUrl(publicUrl)
-
-      if (parsed.length > 0) {
-        // DB im Hintergrund aktualisieren
-        supabase.from('products').delete().neq('id', '00000000-0000-0000-0000-000000000000').then(() => {
-          supabase.from('products').insert(parsed).then(() => {
-            supabase.from('products').select('*').order('produkt').then(({ data }) => {
-              if (data && data.length > 0) setProducts(data as Product[])
-            })
-          })
-        })
-        // Sofort mit geparsten Daten anzeigen
-        setProducts(parsed.map((p, i) => ({ ...p, id: `storage-${i}`, created_at: '', updated_at: '' })))
-        setSyncStatus(null)
-        setLoading(false)
-        return
-      }
-    } catch {
-      // Kein Storage-File vorhanden → Datenbank verwenden
+    const now = Date.now()
+    // Cache verwenden wenn nicht abgelaufen
+    if (_productsCache.length > 0 && now - _cacheTimestamp < CACHE_TTL) {
+      setProducts(_productsCache)
+      return
     }
-
-    setSyncStatus(null)
+    setLoading(true)
     const { data } = await supabase.from('products').select('*').order('produkt')
-    setProducts((data as Product[]) ?? [])
+    _productsCache = (data as Product[]) ?? []
+    _cacheTimestamp = Date.now()
+    setProducts(_productsCache)
     setLoading(false)
   }
 
+  // Fuzzy-Filter über alle Produktfelder
   const filtered = products.filter((p) =>
-    p.produkt.toLowerCase().includes(search.toLowerCase()) ||
-    (p.haendler ?? '').toLowerCase().includes(search.toLowerCase()) ||
-    (p.masse_mm ?? '').toLowerCase().includes(search.toLowerCase()) ||
-    (p.kategorie ?? '').toLowerCase().includes(search.toLowerCase())
+    fuzzyMatch(p.produkt, search) ||
+    fuzzyMatch(p.haendler ?? '', search) ||
+    fuzzyMatch(p.masse_mm ?? '', search) ||
+    fuzzyMatch(p.kategorie ?? '', search) ||
+    fuzzyMatch(p.staerke_mm ?? '', search)
   )
 
   // Kategorien aus DB + immer die vordefinierten anzeigen
@@ -118,31 +116,28 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
     (p) => (p.kategorie ?? 'Sonstige') === selectedKategorie
   )
 
-  const gesamtpreis = selected?.vk_preis != null
-    ? selected.vk_preis * (parseFloat(menge) || 1)
+  const mengeNum = parseFloat(menge)
+  const mengeValid = !isNaN(mengeNum) && mengeNum > 0
+
+  const gesamtpreis = selected?.vk_preis != null && mengeValid
+    ? selected.vk_preis * mengeNum
     : null
 
   const handleAdd = async () => {
     if (!selected) return
+    if (!mengeValid) {
+      setError('Menge muss eine positive Zahl sein.')
+      return
+    }
     setSaving(true)
     setError(null)
 
-    // Falls temporäre ID → echte ID aus DB holen
-    let productId = selected.id
-    if (productId.startsWith('temp-')) {
-      const { data } = await supabase
-        .from('products')
-        .select('id')
-        .eq('produkt', selected.produkt)
-        .limit(1)
-        .single()
-      if (data) productId = data.id
-    }
-
     const { error } = await supabase.from('project_items').insert({
       project_id: projectId,
-      product_id: productId,
-      menge: parseFloat(menge) || 1,
+      product_id: selected.id,
+      product_name: selected.produkt,
+      product_kategorie: selected.kategorie ?? null,
+      menge: mengeNum,
       notiz: notiz.trim() || null,
       hinzugefuegt_von: user?.id ?? null,
     })
@@ -163,16 +158,8 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Produkt hinzufügen" maxWidth="max-w-2xl">
+    <Modal open={open} onClose={onClose} title="Ware hinzufügen" maxWidth="max-w-2xl">
       <div className="space-y-3">
-
-        {/* Sync-Status */}
-        {syncStatus && (
-          <p className="text-xs text-muted font-opensans flex items-center gap-2">
-            <span className="inline-block w-3 h-3 border border-muted border-t-transparent rounded-full animate-spin" />
-            {syncStatus}
-          </p>
-        )}
 
         {/* Modus-Tabs */}
         {!selected && (
@@ -204,7 +191,7 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
               type="text"
               value={search}
               onChange={(e) => { setSearch(e.target.value); setSelected(null) }}
-              placeholder="Produkt suchen..."
+              placeholder="Ware suchen (Tippfehler & Umlaute egal)…"
               className="w-full bg-transparent border border-border text-white px-4 py-3 font-opensans text-sm focus:border-white outline-none transition-colors placeholder-muted"
             />
             <div className="border border-border overflow-y-auto" style={{ maxHeight: '260px' }}>
@@ -215,8 +202,8 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
               ) : filtered.length === 0 ? (
                 <p className="text-muted text-sm font-opensans p-4 text-center">
                   {products.length === 0
-                    ? 'Keine Produkte. Bitte SharePoint-Link im Admin-Bereich eintragen.'
-                    : 'Keine Produkte gefunden.'}
+                    ? 'Keine Waren. Bitte Excel im Admin-Bereich hochladen.'
+                    : `Keine Treffer für „${search}".`}
                 </p>
               ) : (
                 filtered.map((p) => (
@@ -224,38 +211,45 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
                 ))
               )}
             </div>
+            {search && filtered.length > 0 && (
+              <p className="text-xs text-muted font-opensans text-right">
+                {filtered.length} Treffer
+              </p>
+            )}
           </>
         )}
 
         {/* LAGER – Kategorienübersicht */}
         {view === 'kategorien' && (
-          <div className="border border-border overflow-y-auto" style={{ maxHeight: '300px' }}>
-            {loading ? (
-              <div className="flex items-center justify-center h-20">
-                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-              </div>
-            ) : (
-              kategorien.map((kat) => {
-                const anzahl = products.filter(
-                  (p) => (p.kategorie ?? 'Sonstige') === kat
-                ).length
-                return (
-                  <button
-                    key={kat}
-                    onClick={() => { setSelectedKategorie(kat); setView('produkte') }}
-                    className="w-full text-left px-4 py-3 border-b border-border last:border-b-0 hover:bg-white hover:text-black transition-colors group flex items-center justify-between"
-                  >
-                    <span className="font-raleway text-sm text-white group-hover:text-black tracking-wide">
-                      {kat}
-                    </span>
-                    <span className="text-xs text-muted group-hover:text-black/60 font-opensans">
-                      {anzahl} Produkt{anzahl !== 1 ? 'e' : ''}
-                    </span>
-                  </button>
-                )
-              })
-            )}
-          </div>
+          <>
+            <div className="border border-border overflow-y-auto" style={{ maxHeight: '300px' }}>
+              {loading ? (
+                <div className="flex items-center justify-center h-20">
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                </div>
+              ) : (
+                kategorien.map((kat) => {
+                  const anzahl = products.filter(
+                    (p) => (p.kategorie ?? 'Sonstige') === kat
+                  ).length
+                  return (
+                    <button
+                      key={kat}
+                      onClick={() => { setSelectedKategorie(kat); setView('produkte') }}
+                      className="w-full text-left px-4 py-3 border-b border-border last:border-b-0 hover:bg-white hover:text-black transition-colors group flex items-center justify-between"
+                    >
+                      <span className="font-raleway text-sm text-white group-hover:text-black tracking-wide">
+                        {kat}
+                      </span>
+                      <span className="text-xs text-muted group-hover:text-black/60 font-opensans">
+                        {anzahl} Ware{anzahl !== 1 ? 'n' : ''}
+                      </span>
+                    </button>
+                  )
+                })
+              )}
+            </div>
+          </>
         )}
 
         {/* LAGER – Produkte einer Kategorie */}
@@ -265,12 +259,13 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
               onClick={() => setView('kategorien')}
               className="text-xs text-muted font-raleway uppercase tracking-widest hover:text-white transition-colors"
             >
-              ← {selectedKategorie}
+              ← Zurück zu Kategorien
             </button>
-            <div className="border border-border overflow-y-auto" style={{ maxHeight: '260px' }}>
+            <p className="text-xs text-white font-raleway uppercase tracking-widest">{selectedKategorie}</p>
+            <div className="border border-border overflow-y-auto" style={{ maxHeight: '300px' }}>
               {produkteInKategorie.length === 0 ? (
                 <p className="text-muted text-sm font-opensans p-4 text-center">
-                  Keine Produkte in dieser Kategorie.
+                  Keine Waren in dieser Kategorie.
                 </p>
               ) : (
                 produkteInKategorie.map((p) => (
@@ -306,7 +301,7 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
             </div>
 
             {/* Menge + Preis */}
-            <div className="flex gap-4">
+            <div className="flex gap-3">
               <div className="flex-1">
                 <label className="block text-xs uppercase tracking-widest text-muted font-raleway mb-2">
                   Menge
@@ -321,8 +316,8 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
                 />
               </div>
               <div className="flex-1">
-                <label className="block text-xs uppercase tracking-widest text-muted font-raleway mb-2">
-                  VK-Preis × Menge
+                <label className="block text-xs uppercase tracking-widest text-muted font-raleway mb-2 whitespace-nowrap">
+                  VK Gesamt
                 </label>
                 <div className="border border-border px-4 py-2.5 font-opensans text-sm">
                   {gesamtpreis !== null ? (
@@ -334,9 +329,9 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
               </div>
             </div>
 
-            {selected.vk_preis !== null && (
+            {selected.vk_preis !== null && mengeValid && (
               <p className="text-xs text-muted font-opensans">
-                Einzelpreis: € {selected.vk_preis.toFixed(2)} · Menge: {parseFloat(menge) || 1}
+                Einzelpreis: € {selected.vk_preis.toFixed(2)} · Menge: {mengeNum}
               </p>
             )}
 
@@ -368,7 +363,7 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
           </button>
           <button
             onClick={handleAdd}
-            disabled={!selected || saving}
+            disabled={!selected || !mengeValid || saving}
             className="flex-1 bg-white text-black py-3 font-raleway text-xs uppercase tracking-widest hover:bg-muted transition-colors disabled:opacity-40"
           >
             {saving ? 'Wird gespeichert...' : 'Hinzufügen'}

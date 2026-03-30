@@ -19,6 +19,7 @@ export interface Project {
   name: string
   beschreibung: string | null
   status: 'aktiv' | 'abgeschlossen' | 'pausiert'
+  typ: 'intern' | 'extern'
   erstellt_von: string | null
   enddatum: string | null
   prosonata_id: string | null
@@ -30,6 +31,8 @@ export interface ProjectItem {
   id: string
   project_id: string
   product_id: string
+  product_name: string | null
+  product_kategorie: string | null
   menge: number
   notiz: string | null
   hinzugefuegt_von: string | null

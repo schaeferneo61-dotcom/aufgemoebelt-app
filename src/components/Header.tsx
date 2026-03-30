@@ -1,8 +1,14 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 
+const ROLLE_DISPLAY: Record<string, string> = {
+  admin: 'Admin',
+  projektleiter: 'Projektleitung',
+  mitarbeiter: 'Team',
+}
+
 export function Header() {
-  const { user, profile, isAdmin, signOut } = useAuth()
+  const { user, profile, isAdminOrProjektleiter, signOut } = useAuth()
   const navigate = useNavigate()
 
   const handleSignOut = async () => {
@@ -10,50 +16,53 @@ export function Header() {
     navigate('/login')
   }
 
+  const rolleDisplay = profile?.rolle ? (ROLLE_DISPLAY[profile.rolle] ?? profile.rolle) : null
+
   return (
     <header
       className="fixed top-0 left-0 right-0 z-50 bg-black border-b border-border"
       style={{ paddingTop: 'env(safe-area-inset-top)' }}
     >
-      <div className="max-w-screen-lg mx-auto px-4 h-14 flex items-center justify-between">
-        {/* Logo + Name */}
-        <Link to="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity shrink-0">
-          <img src="/logo.png" alt="Aufgemoebelt Logo" className="w-8 h-8 object-contain" />
-          <span className="font-raleway font-semibold text-white text-xs tracking-widest hidden sm:block">
-            aufgemoebelt
-          </span>
-        </Link>
+      {/* h-14 = 56px — alle drei Elemente absolut positioniert */}
+      <div className="relative h-14">
 
-        {/* Nav */}
-        <nav className="flex items-center gap-4">
-          <Link
-            to="/"
-            className="font-raleway text-xs tracking-widest uppercase text-white hover:text-muted transition-colors"
-          >
-            Warenwirtschaft
+        {/* Logo – absolut links */}
+        <div className="absolute left-0 top-0 bottom-0 flex items-center px-4">
+          <Link to="/" className="hover:opacity-70 transition-opacity flex items-center">
+            <img src="/logo.png" alt="aufgemoebelt" className="w-7 h-7 object-contain" />
           </Link>
-          {isAdmin && (
-            <Link
-              to="/admin"
-              className="font-raleway text-xs tracking-widest uppercase text-white hover:text-muted transition-colors"
-            >
-              Admin
-            </Link>
-          )}
-          {user && (
-            <div className="flex items-center gap-3 border-l border-border pl-4">
-              <span className="text-xs text-muted font-opensans hidden sm:block truncate max-w-[120px]">
-                {profile?.name ?? user.email}
-              </span>
-              <button
-                onClick={handleSignOut}
-                className="font-raleway text-xs tracking-widest uppercase text-white border border-border px-3 py-1.5 hover:bg-white hover:text-black transition-colors whitespace-nowrap"
+        </div>
+
+        {/* Rolle – absolut mittig auf der gesamten Header-Breite */}
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          {rolleDisplay && (
+            isAdminOrProjektleiter ? (
+              <Link
+                to="/admin"
+                className="pointer-events-auto font-raleway font-semibold text-white text-[11px] tracking-[0.2em] uppercase hover:opacity-70 transition-opacity"
               >
-                Abmelden
-              </button>
-            </div>
+                {rolleDisplay}
+              </Link>
+            ) : (
+              <span className="font-raleway font-semibold text-white text-[11px] tracking-[0.2em] uppercase">
+                {rolleDisplay}
+              </span>
+            )
           )}
-        </nav>
+        </div>
+
+        {/* Abmelden – absolut rechts */}
+        <div className="absolute right-0 top-0 bottom-0 flex items-center px-4">
+          {user && (
+            <button
+              onClick={handleSignOut}
+              className="font-raleway text-[10px] tracking-widest uppercase text-white border border-border px-3 py-1.5 hover:bg-white hover:text-black transition-colors whitespace-nowrap"
+            >
+              Abmelden
+            </button>
+          )}
+        </div>
+
       </div>
     </header>
   )

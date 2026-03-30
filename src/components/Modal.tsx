@@ -23,7 +23,7 @@ export function Modal({ open, onClose, title, children, maxWidth = 'max-w-lg' }:
       style={{ background: 'rgba(0,0,0,0.85)' }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
-      <div className={`bg-black border border-border w-full ${maxWidth} max-h-[90vh] flex flex-col`}>
+      <div className={`bg-black border border-border w-full ${maxWidth} flex flex-col`} style={{ maxHeight: '90dvh' }}>
         {/* Header */}
         <div className="flex items-center justify-between p-5 border-b border-border">
           <h2 className="font-raleway font-semibold text-white uppercase tracking-widest text-sm">

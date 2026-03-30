@@ -25,7 +25,9 @@ export function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-black flex flex-col items-center justify-center px-4">
+    <div className="min-h-screen bg-black flex flex-col items-center justify-center px-4"
+      style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
+    >
       {/* Logo */}
       <div className="mb-10 flex flex-col items-center gap-4">
         <Logo size={72} />
@@ -89,6 +91,9 @@ export function LoginPage() {
         <div className="border-b border-border mt-8" />
         <p className="text-muted text-xs font-opensans text-center mt-6">
           Kein Zugang? Kontakt an den Administrator.
+        </p>
+        <p className="text-muted text-xs font-opensans text-center mt-2">
+          Made by Neo Schaefer
         </p>
       </div>
     </div>

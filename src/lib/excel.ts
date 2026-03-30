@@ -1,5 +1,4 @@
 import * as XLSX from 'xlsx'
-import { supabase } from './supabase'
 import type { Product, Project, ProjectItem } from '../types'
 
 // ── IMPORT ──────────────────────────────────────────────────
@@ -73,7 +72,7 @@ function parseRows(data: Uint8Array): Omit<Product, 'id' | 'created_at' | 'updat
   const colHaendler  = findCol('händler', 'haendler', 'lieferant', 'hersteller')
   const colEK        = findCol('ek-preis', 'ek preis', 'einkauf', 'ek netto', 'ek_preis')
   const colVK        = findCol('vk-preis', 'vk preis', 'verkauf', 'vk netto', 'vk_preis')
-  const colPalette   = findCol('palette', 'stk/palette', 'palette')
+  const colPalette   = findCol('stk/palette', 'palette')
 
   // Erster Spaltenindex (für Kategorien-Erkennung)
   const firstCol = colProdukt >= 0 ? colProdukt : 0
@@ -165,23 +164,26 @@ export function parseProductExcel(file: File): Promise<Omit<Product, 'id' | 'cre
   })
 }
 
-// ── Storage Upload ────────────────────────────────────────────
+// ── Direkter Browser-Download ────────────────────────────────
 
-async function uploadToStorage(workbook: XLSX.WorkBook, filename: string): Promise<string> {
+function downloadWorkbook(workbook: XLSX.WorkBook, filename: string): void {
   const buf: number[] = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' })
-  const blob = new Blob([new Uint8Array(buf)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-  const file = new File([blob], filename)
-  const { error } = await supabase.storage
-    .from('exports')
-    .upload(filename, file, { upsert: true, contentType: file.type })
-  if (error) throw new Error('Speichern fehlgeschlagen: ' + error.message)
-  const { data } = supabase.storage.from('exports').getPublicUrl(filename)
-  return data.publicUrl
+  const blob = new Blob([new Uint8Array(buf)], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
 export interface ExportData {
   project: Project
-  items: (ProjectItem & { product: Product })[]
+  items: (ProjectItem & { product?: Product | null })[]
   creatorName?: string
 }
 
@@ -194,7 +196,7 @@ function S(ws: XLSX.WorkSheet, ref: string, style: object) {
   ws[ref].s = style
 }
 
-export async function exportProjectToExcel(data: ExportData): Promise<string> {
+export async function exportProjectToExcel(data: ExportData): Promise<void> {
   const wb = XLSX.utils.book_new()
   const rows: (string | number)[][] = []
 
@@ -210,19 +212,18 @@ export async function exportProjectToExcel(data: ExportData): Promise<string> {
     `Exportiert: ${new Date().toLocaleDateString('de-AT')}`,
     '', ''
   ])
-  rows.push([data.creatorName ? `Erstellt von: ${data.creatorName}` : '', '', '', '', '', '', '', '', ''])
   rows.push([]) // Leerzeile
 
   // Header
-  const header = ['Produkt', 'Kategorie', 'Stärke', 'Maße', 'Händler', 'Menge', 'EK netto/Stk', 'VK netto/Stk', 'Gesamt VK']
+  const header = ['Ware', 'Kategorie', 'Stärke', 'Maße', 'Händler', 'Menge', 'EK netto/Stk', 'VK netto/Stk', 'Gesamt VK']
   rows.push(header)
   const headerRowIdx = rows.length - 1
 
   // Daten
   for (const item of data.items) {
     rows.push([
-      item.product?.produkt ?? '(gelöscht)',
-      item.product?.kategorie ?? '',
+      item.product?.produkt ?? item.product_name ?? '(gelöscht)',
+      item.product?.kategorie ?? item.product_kategorie ?? '',
       item.product?.staerke_mm ?? '',
       item.product?.masse_mm ?? '',
       item.product?.haendler ?? '',
@@ -243,25 +244,31 @@ export async function exportProjectToExcel(data: ExportData): Promise<string> {
 
   // Stile
   const BLACK = '000000', WHITE = 'FFFFFF', GREY = '111111', LIGHTGREY = '1A1A1A', MUTED = '888888'
-  const titleStyle = { font: { bold: true, color: { rgb: WHITE }, sz: 18, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: BLACK } } }
+  // Dünner Rahmen für alle Tabellenzellen (Header + Daten + Gesamt)
+  const gridBorder = {
+    top:    { style: 'thin', color: { rgb: '333333' } },
+    bottom: { style: 'thin', color: { rgb: '333333' } },
+    left:   { style: 'thin', color: { rgb: '333333' } },
+    right:  { style: 'thin', color: { rgb: '333333' } },
+  }
+  const titleStyle    = { font: { bold: true, color: { rgb: WHITE }, sz: 18, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: BLACK } } }
   const subtitleStyle = { font: { bold: true, color: { rgb: WHITE }, sz: 13, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: BLACK } } }
-  const metaStyle = { font: { color: { rgb: MUTED }, sz: 9, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: BLACK } } }
-  const emptyStyle = { fill: { patternType: 'solid', fgColor: { rgb: BLACK } } }
-  const headerStyle = { font: { bold: true, color: { rgb: WHITE }, sz: 10, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: GREY } }, alignment: { horizontal: 'left' } }
-  const cellStyle = { font: { color: { rgb: WHITE }, sz: 10, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: LIGHTGREY } }, alignment: { horizontal: 'left' } }
-  const numStyle = { font: { color: { rgb: WHITE }, sz: 10, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: LIGHTGREY } }, alignment: { horizontal: 'right' } }
-  const totalStyle = { font: { bold: true, color: { rgb: WHITE }, sz: 10, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: GREY } }, alignment: { horizontal: 'right' } }
+  const metaStyle     = { font: { color: { rgb: MUTED }, sz: 9, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: BLACK } } }
+  const emptyStyle    = { fill: { patternType: 'solid', fgColor: { rgb: BLACK } } }
+  const headerStyle   = { font: { bold: true, color: { rgb: WHITE }, sz: 10, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: GREY } },      alignment: { horizontal: 'left' },  border: gridBorder }
+  const cellStyle     = { font: { color: { rgb: WHITE }, sz: 10, name: 'Arial' },              fill: { patternType: 'solid', fgColor: { rgb: LIGHTGREY } }, alignment: { horizontal: 'left' },  border: gridBorder }
+  const numStyle      = { font: { color: { rgb: WHITE }, sz: 10, name: 'Arial' },              fill: { patternType: 'solid', fgColor: { rgb: LIGHTGREY } }, alignment: { horizontal: 'right' }, border: gridBorder }
+  const totalStyle    = { font: { bold: true, color: { rgb: WHITE }, sz: 10, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: GREY } },      alignment: { horizontal: 'right' }, border: gridBorder }
 
   const cols = 9
   const colL = (i: number) => String.fromCharCode(65 + i)
 
-  // Titelzeilen
+  // Titelzeilen (ohne "Erstellt von" – nur 4 Metazeilen + 1 Leerzeile)
   for (let c = 0; c < cols; c++) S(ws, `${colL(c)}1`, titleStyle)
   for (let c = 0; c < cols; c++) S(ws, `${colL(c)}2`, subtitleStyle)
   for (let c = 0; c < cols; c++) S(ws, `${colL(c)}3`, metaStyle)
   for (let c = 0; c < cols; c++) S(ws, `${colL(c)}4`, metaStyle)
-  for (let c = 0; c < cols; c++) S(ws, `${colL(c)}5`, metaStyle)
-  for (let c = 0; c < cols; c++) S(ws, `${colL(c)}6`, emptyStyle)
+  for (let c = 0; c < cols; c++) S(ws, `${colL(c)}5`, emptyStyle)
 
   // Header
   for (let c = 0; c < cols; c++) S(ws, `${colL(c)}${headerRowIdx + 1}`, headerStyle)
@@ -287,8 +294,13 @@ export async function exportProjectToExcel(data: ExportData): Promise<string> {
     { s: { r: 2, c: 0 }, e: { r: 2, c: 8 } },
   ]
 
-  XLSX.utils.book_append_sheet(wb, ws, data.project.name.substring(0, 31))
+  // Ungültige Zeichen für Excel Sheet-Namen entfernen: [ ] : * ? / \
+  const sheetName = data.project.name
+    .replace(/[[\]:*?/\\]/g, '')
+    .trim()
+    .substring(0, 31) || 'Export'
+  XLSX.utils.book_append_sheet(wb, ws, sheetName)
 
-  const filename = sanitizeFilename(data.project.name) + '_.xlsx'
-  return uploadToStorage(wb, filename)
+  const filename = sanitizeFilename(data.project.name) + '.xlsx'
+  downloadWorkbook(wb, filename)
 }

@@ -13,6 +13,7 @@ export function CreateProjectModal({ open, onClose, onCreated }: Props) {
   const { user } = useAuth()
   const [name, setName] = useState('')
   const [beschreibung, setBeschreibung] = useState('')
+  const [typ, setTyp] = useState<'extern' | 'intern'>('extern')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -27,6 +28,7 @@ export function CreateProjectModal({ open, onClose, onCreated }: Props) {
       beschreibung: beschreibung.trim() || null,
       erstellt_von: user?.id ?? null,
       status: 'aktiv',
+      typ,
     })
 
     if (error) {
@@ -34,6 +36,7 @@ export function CreateProjectModal({ open, onClose, onCreated }: Props) {
     } else {
       setName('')
       setBeschreibung('')
+      setTyp('extern')
       onCreated()
       onClose()
     }
@@ -69,6 +72,28 @@ export function CreateProjectModal({ open, onClose, onCreated }: Props) {
             placeholder="Optionale Projektbeschreibung..."
           />
         </div>
+
+        {/* Intern / Extern */}
+        <div>
+          <label className="block text-xs uppercase tracking-widest text-muted font-raleway mb-2">
+            Typ
+          </label>
+          <div className="flex border border-border overflow-hidden">
+            {(['extern', 'intern'] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setTyp(t)}
+                className={`flex-1 py-2.5 font-raleway text-xs uppercase tracking-widest transition-colors ${
+                  typ === t ? 'bg-white text-black font-semibold' : 'text-muted hover:text-white'
+                }`}
+              >
+                {t === 'extern' ? 'Extern' : 'Intern'}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {error && (
           <p className="text-red-400 text-xs font-opensans">{error}</p>
         )}

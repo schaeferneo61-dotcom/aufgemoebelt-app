@@ -42,7 +42,17 @@
       "Bash(export PATH=\"/opt/homebrew/opt/openjdk@21/bin:$PATH\")",
       "Bash(adb devices:*)",
       "Read(//opt/homebrew/bin/**)",
-      "Bash(/Users/neoschaefer/Library/Android/sdk/platform-tools/adb devices:*)"
+      "Bash(/Users/neoschaefer/Library/Android/sdk/platform-tools/adb devices:*)",
+      "Bash(grep -r VITE_SUPABASE '/Users/neoschaefer/Aufgemoebelt - Inter/' --include=*.env*)",
+      "Bash(supabase --version)",
+      "Bash(python3 -c \"from PIL import Image; img=Image.open\\(''/Users/neoschaefer/Aufgemoebelt - Inter/public/logo.png''\\); print\\(img.size\\)\")",
+      "Bash(sips -g pixelWidth -g pixelHeight \"/Users/neoschaefer/Aufgemoebelt - Inter/public/logo.png\")",
+      "Bash(sips -z 192 192 \"/Users/neoschaefer/Aufgemoebelt - Inter/public/logo.png\" --out \"/Users/neoschaefer/Aufgemoebelt - Inter/public/icon-192.png\")",
+      "Bash(sips -z 512 512 \"/Users/neoschaefer/Aufgemoebelt - Inter/public/logo.png\" --out \"/Users/neoschaefer/Aufgemoebelt - Inter/public/icon-512.png\")",
+      "Bash(sips -z 180 180 \"/Users/neoschaefer/Aufgemoebelt - Inter/public/logo.png\" --out \"/Users/neoschaefer/Aufgemoebelt - Inter/public/apple-touch-icon.png\")",
+      "Bash(curl -s \"https://allycirnkqflqiuwgfrb.supabase.co/rest/v1/projects?select=name,typ,prosonata_id&typ=eq.intern&order=name&limit=20\" -H \"apikey: sb_publishable_n42CP6e3UkAcT8aBYtgZjA_l8aW9Itn\" -H \"Authorization: Bearer sb_publishable_n42CP6e3UkAcT8aBYtgZjA_l8aW9Itn\")",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s \"https://allycirnkqflqiuwgfrb.supabase.co/rest/v1/projects?select=name,typ,prosonata_id&limit=5\" -H \"apikey: sb_publishable_n42CP6e3UkAcT8aBYtgZjA_l8aW9Itn\" -H \"Authorization: Bearer sb_publishable_n42CP6e3UkAcT8aBYtgZjA_l8aW9Itn\")"
     ]
   }
 }

@@ -26,9 +26,9 @@ export function ProjectDetailPage() {
   const [editingItem, setEditingItem] = useState<string | null>(null)
   const [editMenge, setEditMenge] = useState('')
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (showSpinner = false) => {
     if (!id) return
-    setLoading(true)
+    if (showSpinner) setLoading(true)
 
     const [{ data: proj }, { data: itemData }] = await Promise.all([
       supabase.from('projects').select('*').eq('id', id).single(),
@@ -41,62 +41,63 @@ export function ProjectDetailPage() {
 
     setProject(proj as Project | null)
     setItems((itemData as ItemWithProduct[]) ?? [])
-    setLoading(false)
+    if (showSpinner) setLoading(false)
   }, [id])
 
   useEffect(() => {
-    load()
+    setLoading(true)
+    load().finally(() => setLoading(false))
     const channel = supabase
       .channel(`project-${id}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'project_items', filter: `project_id=eq.${id}` },
-        load,
+        () => load(false),
       )
       .subscribe()
     return () => { supabase.removeChannel(channel) }
   }, [id, load])
 
   const deleteItem = async (itemId: string) => {
+    if (!window.confirm('Position wirklich entfernen?')) return
     setDeletingId(itemId)
-    await supabase.from('project_items').delete().eq('id', itemId)
+    const backup = items.find(i => i.id === itemId)
+    setItems(prev => prev.filter(i => i.id !== itemId)) // optimistisch entfernen
+    const { error } = await supabase.from('project_items').delete().eq('id', itemId)
+    if (error) {
+      // Wiederherstellen wenn DB-Fehler
+      if (backup) setItems(prev => [...prev, backup].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()))
+      alert('Fehler beim Entfernen: ' + error.message)
+    }
     setDeletingId(null)
-    load()
   }
 
   const saveEditMenge = async (itemId: string) => {
     const n = parseFloat(editMenge)
-    if (!isNaN(n) && n > 0) {
-      await supabase.from('project_items').update({ menge: n }).eq('id', itemId)
+    if (isNaN(n) || n <= 0) {
+      setEditingItem(null)
+      return
+    }
+    const { error } = await supabase.from('project_items').update({ menge: n }).eq('id', itemId)
+    if (error) {
+      alert('Fehler beim Speichern: ' + error.message)
+      return // Edit-Zustand offen lassen bei Fehler
     }
     setEditingItem(null)
-    load()
   }
 
   const [exporting, setExporting] = useState(false)
-  const [exportUrl, setExportUrl] = useState<string | null>(null)
-  const [hasNewChanges, setHasNewChanges] = useState(false)
-
-  useEffect(() => {
-    if (!project || items.length === 0) return
-    const key = `export_${project.id}`
-    const lastDl = localStorage.getItem(key)
-    if (!lastDl) { setHasNewChanges(false); return }
-    const lastTs = new Date(lastDl).getTime()
-    const newest = Math.max(...items.map(i => new Date(i.updated_at ?? i.created_at).getTime()))
-    setHasNewChanges(newest > lastTs)
-  }, [project, items])
+  // „Neue Änderungen" nur in dieser Session zeigen (nach einem Export in dieser Session)
+  const [sessionExportTime, setSessionExportTime] = useState<number | null>(null)
+  const hasNewChanges = sessionExportTime !== null && items.length > 0 &&
+    Math.max(...items.map(i => new Date(i.updated_at ?? i.created_at).getTime())) > sessionExportTime
 
   const handleExport = async () => {
     if (!project) return
     setExporting(true)
-    setExportUrl(null)
     try {
-      const url = await exportProjectToExcel({ project, items, creatorName: profile?.name ?? undefined })
-      setExportUrl(url)
-      localStorage.setItem(`export_${project.id}`, new Date().toISOString())
-      setHasNewChanges(false)
-      window.open(url, '_blank')
+      await exportProjectToExcel({ project, items, creatorName: profile?.name ?? undefined })
+      setSessionExportTime(Date.now())
     } catch (e) {
       alert('Export fehlgeschlagen: ' + String(e))
     } finally {
@@ -119,8 +120,8 @@ export function ProjectDetailPage() {
     return (
       <div className="min-h-screen bg-black">
         <Header />
-        <main className="max-w-screen-lg mx-auto px-4 pb-16 text-center"
-          style={{ paddingTop: 'calc(env(safe-area-inset-top) + 5rem)' }}>
+        <main className="max-w-screen-lg mx-auto px-4 text-center"
+          style={{ paddingTop: 'calc(env(safe-area-inset-top) + 5rem)', paddingBottom: 'calc(env(safe-area-inset-bottom) + 4rem)' }}>
           <p className="text-muted font-opensans">Projekt nicht gefunden.</p>
           <Link to="/" className="text-white underline text-sm font-opensans mt-4 block">← Zurück</Link>
         </main>
@@ -132,8 +133,11 @@ export function ProjectDetailPage() {
     <div className="min-h-screen bg-black">
       <Header />
       <main
-        className="max-w-screen-lg mx-auto px-4 pb-16"
-        style={{ paddingTop: 'calc(env(safe-area-inset-top) + 4rem)' }}
+        className="max-w-screen-lg mx-auto px-4"
+        style={{
+          paddingTop: 'calc(env(safe-area-inset-top) + 4rem)',
+          paddingBottom: 'calc(env(safe-area-inset-bottom) + 4rem)',
+        }}
       >
 
         {/* Breadcrumb */}
@@ -153,38 +157,34 @@ export function ProjectDetailPage() {
               <p className="text-muted font-opensans text-sm mt-1">{project.beschreibung}</p>
             )}
             {isAdminOrProjektleiter && (
-              <p className="text-muted font-opensans text-xs mt-2">
-                Status: <span className="text-white">{project.status.charAt(0).toUpperCase() + project.status.slice(1)}</span>
-                {' · '}
-                Erstellt: <span className="text-white">{new Date(project.created_at).toLocaleDateString('de-AT')}</span>
+              <p className="text-muted font-opensans text-xs mt-2 flex flex-wrap gap-x-3 gap-y-0.5">
+                <span>Status: <span className="text-white">{project.status.charAt(0).toUpperCase() + project.status.slice(1)}</span></span>
+                {project.enddatum && (
+                  <span>Enddatum: <span className="text-white">{new Date(project.enddatum).toLocaleDateString('de-AT')}</span></span>
+                )}
+                <span>Erstellt: <span className="text-white">{new Date(project.created_at).toLocaleDateString('de-AT')}</span></span>
+                <span>Typ: <span className="text-white capitalize">{project.typ ?? 'Extern'}</span></span>
               </p>
             )}
           </div>
           <div className="flex gap-2 flex-wrap self-start sm:self-auto">
-            {isAdmin && (
-              <div className="flex flex-col items-end gap-1">
-                <button
-                  onClick={handleExport}
-                  disabled={exporting}
-                  className="border border-border text-white px-4 py-2.5 font-raleway text-xs uppercase tracking-widest hover:bg-white hover:text-black transition-colors disabled:opacity-50"
-                >
-                  {exporting ? 'Speichern…' : 'Excel Export'}
-                </button>
+            {isAdminOrProjektleiter && (
+              <button
+                onClick={handleExport}
+                disabled={exporting}
+                className="relative border border-border text-white px-4 py-2.5 font-raleway text-xs uppercase tracking-widest hover:bg-white hover:text-black transition-colors disabled:opacity-50"
+              >
+                {exporting ? 'Exportiert…' : 'Excel Export'}
                 {hasNewChanges && (
-                  <span className="text-xs text-yellow-400 font-opensans">⚠ Neue Änderungen – erneut herunterladen</span>
+                  <span className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-yellow-400 rounded-full" title="Neue Änderungen seit letztem Export" />
                 )}
-                {exportUrl && !hasNewChanges && (
-                  <a href={exportUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-green-400 font-opensans hover:underline">
-                    ↓ Datei herunterladen
-                  </a>
-                )}
-              </div>
+              </button>
             )}
             <button
               onClick={() => setAddOpen(true)}
               className="bg-white text-black px-5 py-2.5 font-raleway text-xs uppercase tracking-widest hover:bg-muted transition-colors"
             >
-              + Produkt
+              + Ware
             </button>
           </div>
         </div>
@@ -193,20 +193,20 @@ export function ProjectDetailPage() {
         {items.length === 0 ? (
           <div className="border border-border p-12 text-center">
             <p className="text-muted font-opensans text-sm mb-4">
-              Noch keine Produkte in diesem Projekt.
+              Noch keine Waren in diesem Projekt.
             </p>
             <button
               onClick={() => setAddOpen(true)}
               className="border border-white text-white px-6 py-3 font-raleway text-xs uppercase tracking-widest hover:bg-white hover:text-black transition-colors"
             >
-              Erstes Produkt hinzufügen
+              Erste Ware hinzufügen
             </button>
           </div>
         ) : (
           <>
             {/* Tabellen-Header (Desktop) */}
             <div className="hidden md:grid grid-cols-[2fr_1fr_1fr_1fr_1fr_auto] gap-4 px-4 py-3 border-b border-border text-xs font-raleway uppercase tracking-widest text-muted">
-              <span>Produkt</span>
+              <span>Ware</span>
               <span>Menge</span>
               <span>EK netto</span>
               <span>VK netto</span>
@@ -234,7 +234,7 @@ export function ProjectDetailPage() {
 
             {/* Summen */}
             <div className="border border-border border-t-0 bg-surface px-4 py-4 flex flex-col sm:flex-row sm:items-center justify-end gap-4">
-              {isAdmin && (
+              {isAdminOrProjektleiter && (
                 <div className="text-xs font-opensans text-muted">
                   EK gesamt: <span className="text-white font-medium">€ {totalEK.toFixed(2)}</span>
                 </div>
@@ -303,25 +303,51 @@ function ItemRow({
       <div className="md:hidden space-y-2">
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
-            <p className="font-opensans text-sm text-white font-medium truncate">{item.product?.produkt ?? '(Produkt nicht mehr vorhanden)'}</p>
-            <p className="text-xs text-muted font-opensans">
+            <p className="font-opensans text-sm text-white font-medium">{item.product?.produkt ?? item.product_name ?? '(Ware nicht mehr vorhanden)'}</p>
+            <p className="text-xs text-muted font-opensans mt-0.5">
               {[item.product?.staerke_mm && `${item.product.staerke_mm} mm`, item.product?.masse_mm].filter(Boolean).join(' · ')}
             </p>
             {item.notiz && <p className="text-xs text-muted font-opensans italic mt-0.5">{item.notiz}</p>}
           </div>
-          {/* Löschen nur wenn canEditItem */}
           {canEditItem && (
             <button
               onClick={() => onDelete(item.id)}
               disabled={deletingId === item.id}
-              className="text-muted hover:text-red-400 transition-colors text-lg leading-none shrink-0"
+              className="text-muted hover:text-red-400 transition-colors shrink-0 p-2 -mr-2 text-xl leading-none"
+              aria-label="Entfernen"
             >
               ×
             </button>
           )}
         </div>
         <div className="flex items-center gap-4 text-xs font-opensans text-muted">
-          <span>Menge: <span className="text-white">{item.menge}</span></span>
+          {/* Menge auf Mobile auch editierbar */}
+          {isEditing ? (
+            <div className="flex items-center gap-2">
+              <span>Menge:</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0.01"
+                step="0.01"
+                value={editMenge}
+                onChange={(e) => onEditMengeChange(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') onEditSave(item.id); if (e.key === 'Escape') onEditCancel() }}
+                className="w-20 bg-transparent border border-white text-white px-2 py-1.5 text-sm font-opensans outline-none"
+                autoFocus
+              />
+              <button onClick={() => onEditSave(item.id)} className="text-green-400 text-base p-2 min-w-[36px] min-h-[36px] flex items-center justify-center">✓</button>
+              <button onClick={onEditCancel} className="text-muted text-base p-2 min-w-[36px] min-h-[36px] flex items-center justify-center hover:text-white">✕</button>
+            </div>
+          ) : (
+            <button
+              onClick={() => canEditItem && onEditStart(item.id, item.menge)}
+              className={canEditItem ? 'hover:underline' : ''}
+            >
+              Menge: <span className="text-white">{item.menge}</span>
+              {canEditItem && <span className="text-muted ml-1">✎</span>}
+            </button>
+          )}
           {item.product?.vk_preis !== null && (
             <span>VK gesamt: <span className="text-white">€ {gesamtVK.toFixed(2)}</span></span>
           )}
@@ -331,7 +357,7 @@ function ItemRow({
       {/* Desktop Layout */}
       <div className="hidden md:grid grid-cols-[2fr_1fr_1fr_1fr_1fr_auto] gap-4 items-center">
         <div className="min-w-0">
-          <p className="font-opensans text-sm text-white font-medium truncate">{item.product?.produkt ?? '(Produkt nicht mehr vorhanden)'}</p>
+          <p className="font-opensans text-sm text-white font-medium truncate">{item.product?.produkt ?? item.product_name ?? '(Ware nicht mehr vorhanden)'}</p>
           <p className="text-xs text-muted font-opensans">
             {[
               item.product?.staerke_mm && `${item.product.staerke_mm} mm`,
@@ -384,7 +410,7 @@ function ItemRow({
           <button
             onClick={() => onDelete(item.id)}
             disabled={deletingId === item.id}
-            className="text-muted hover:text-red-400 transition-colors text-xl leading-none"
+            className="text-muted hover:text-red-400 transition-colors text-xl leading-none p-1"
             title="Entfernen"
           >
             ×
