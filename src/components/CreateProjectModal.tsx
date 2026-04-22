@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Modal } from './Modal'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
@@ -16,6 +16,14 @@ export function CreateProjectModal({ open, onClose, onCreated }: Props) {
   const [typ, setTyp] = useState<'extern' | 'intern'>('extern')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // State zurücksetzen wenn der Dialog erneut geöffnet wird (kein stale Fehler/Loading)
+  useEffect(() => {
+    if (open) {
+      setError(null)
+      setLoading(false)
+    }
+  }, [open])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

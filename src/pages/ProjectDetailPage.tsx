@@ -5,11 +5,14 @@ import { useAuth } from '../context/AuthContext'
 import { Header } from '../components/Header'
 import { AddProductModal } from '../components/AddProductModal'
 import { exportProjectToExcel } from '../lib/excel'
+import { logLagerBewegung } from '../lib/lager'
+import { getQueueForProject, removeFromQueue } from '../lib/offlineQueue'
 import type { Project, ProjectItem, Product } from '../types'
 
-type ItemWithProduct = ProjectItem & { product: Product }
+type ItemWithProduct = ProjectItem & { product: Product; _offline?: boolean }
 
 function canEdit(item: ItemWithProduct, userId: string | undefined, isAdminOrProjektleiter: boolean): boolean {
+  if (item._offline) return true // Offline-Items können immer entfernt werden
   if (isAdminOrProjektleiter) return true
   if (!userId || item.hinzugefuegt_von !== userId) return false
   return Date.now() - new Date(item.created_at).getTime() < 10 * 60 * 1000
@@ -25,6 +28,8 @@ export function ProjectDetailPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [editingItem, setEditingItem] = useState<string | null>(null)
   const [editMenge, setEditMenge] = useState('')
+  const [syncNote, setSyncNote] = useState<string | null>(null)
+  const [isOnline, setIsOnline] = useState(navigator.onLine)
 
   const load = useCallback(async (showSpinner = false) => {
     if (!id) return
@@ -40,7 +45,25 @@ export function ProjectDetailPage() {
     ])
 
     setProject(proj as Project | null)
-    setItems((itemData as ItemWithProduct[]) ?? [])
+
+    // Offline-Buchungen aus lokalem Speicher hinzufügen
+    const onlineItems = (itemData as ItemWithProduct[]) ?? []
+    const pending = getQueueForProject(id).map(q => ({
+      id: q.id,
+      project_id: q.projectId,
+      product_id: q.productId,
+      product_name: q.productName,
+      product_kategorie: q.productKategorie,
+      menge: q.menge,
+      notiz: q.notiz,
+      hinzugefuegt_von: q.userId,
+      created_at: q.createdAt,
+      updated_at: q.createdAt,
+      product: q.product,
+      _offline: true,
+    } as ItemWithProduct))
+
+    setItems([...onlineItems, ...pending])
     if (showSpinner) setLoading(false)
   }, [id])
 
@@ -58,7 +81,42 @@ export function ProjectDetailPage() {
     return () => { supabase.removeChannel(channel) }
   }, [id, load])
 
+  // Bug 1 Fix: Globales Event von App.tsx empfangen – Seite nach Sync neu laden
+  useEffect(() => {
+    const handleQueueUpdated = (e: Event) => {
+      const { synced, rejected } = (e as CustomEvent<{ synced: number; rejected: string[] }>).detail
+      load(false)
+      if (rejected.length > 0) {
+        setSyncNote(
+          `${synced > 0 ? `${synced} Buchung(en) synchronisiert. ` : ''}` +
+          `${rejected.length} Ware(n) nicht mehr vorhanden und wurden verworfen: ${rejected.join(', ')}`
+        )
+      }
+    }
+    window.addEventListener('offlineQueueUpdated', handleQueueUpdated)
+    return () => window.removeEventListener('offlineQueueUpdated', handleQueueUpdated)
+  }, [load])
+
+  // Online-Status reaktiv halten, damit der Echtzeit-Indikator korrekt erscheint/verschwindet
+  useEffect(() => {
+    const onOnline = () => setIsOnline(true)
+    const onOffline = () => setIsOnline(false)
+    window.addEventListener('online', onOnline)
+    window.addEventListener('offline', onOffline)
+    return () => {
+      window.removeEventListener('online', onOnline)
+      window.removeEventListener('offline', onOffline)
+    }
+  }, [])
+
   const deleteItem = async (itemId: string) => {
+    const isOffline = items.find(i => i.id === itemId)?._offline
+    if (isOffline) {
+      removeFromQueue(itemId)
+      setItems(prev => prev.filter(i => i.id !== itemId))
+      window.dispatchEvent(new CustomEvent('offlineQueueUpdated', { detail: { synced: 0, rejected: [] } }))
+      return
+    }
     if (!window.confirm('Position wirklich entfernen?')) return
     setDeletingId(itemId)
     const backup = items.find(i => i.id === itemId)
@@ -68,6 +126,18 @@ export function ProjectDetailPage() {
       // Wiederherstellen wenn DB-Fehler
       if (backup) setItems(prev => [...prev, backup].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()))
       alert('Fehler beim Entfernen: ' + error.message)
+    } else if (backup) {
+      // Audit-Log: Ware wieder eingebucht
+      await logLagerBewegung({
+        product_id: backup.product_id,
+        product_name: backup.product?.produkt ?? backup.product_name ?? '(unbekannt)',
+        project_id: id!,
+        project_name: project?.name ?? '',
+        aktion: 'eingebucht',
+        menge_delta: backup.menge,
+        user_id: user?.id ?? null,
+        user_name: profile?.name ?? null,
+      })
     }
     setDeletingId(null)
   }
@@ -78,10 +148,30 @@ export function ProjectDetailPage() {
       setEditingItem(null)
       return
     }
+    const oldItem = items.find(i => i.id === itemId)
+    // No-op: gleiche Menge → kein DB-Schreibzugriff, kein Audit-Eintrag
+    if (oldItem && oldItem.menge === n) {
+      setEditingItem(null)
+      return
+    }
     const { error } = await supabase.from('project_items').update({ menge: n }).eq('id', itemId)
     if (error) {
       alert('Fehler beim Speichern: ' + error.message)
       return // Edit-Zustand offen lassen bei Fehler
+    }
+    // Audit-Log: Mengenänderung → delta = neue Menge - alte Menge (negativ = mehr verbraucht)
+    if (oldItem) {
+      const delta = -(n - oldItem.menge) // negative delta = mehr aus Lager
+      await logLagerBewegung({
+        product_id: oldItem.product_id,
+        product_name: oldItem.product?.produkt ?? oldItem.product_name ?? '(unbekannt)',
+        project_id: id!,
+        project_name: project?.name ?? '',
+        aktion: 'menge_geaendert',
+        menge_delta: delta,
+        user_id: user?.id ?? null,
+        user_name: profile?.name ?? null,
+      })
     }
     setEditingItem(null)
   }
@@ -89,14 +179,17 @@ export function ProjectDetailPage() {
   const [exporting, setExporting] = useState(false)
   // „Neue Änderungen" nur in dieser Session zeigen (nach einem Export in dieser Session)
   const [sessionExportTime, setSessionExportTime] = useState<number | null>(null)
-  const hasNewChanges = sessionExportTime !== null && items.length > 0 &&
-    Math.max(...items.map(i => new Date(i.updated_at ?? i.created_at).getTime())) > sessionExportTime
+  // Bug 2 Fix: Offline-Items aus Änderungserkennung ausschließen
+  const onlineItems = items.filter(i => !i._offline)
+  const hasNewChanges = sessionExportTime !== null && onlineItems.length > 0 &&
+    Math.max(...onlineItems.map(i => new Date(i.updated_at ?? i.created_at).getTime())) > sessionExportTime
 
   const handleExport = async () => {
     if (!project) return
     setExporting(true)
     try {
-      await exportProjectToExcel({ project, items, creatorName: profile?.name ?? undefined })
+      // Nur gespeicherte Items exportieren – offline-ausstehende sind noch nicht in der DB
+      await exportProjectToExcel({ project, items: items.filter(i => !i._offline), creatorName: profile?.name ?? undefined })
       setSessionExportTime(Date.now())
     } catch (e) {
       alert('Export fehlgeschlagen: ' + String(e))
@@ -189,6 +282,14 @@ export function ProjectDetailPage() {
           </div>
         </div>
 
+        {/* Sync-Hinweis nach Reconnect */}
+        {syncNote && (
+          <div className="mb-4 px-4 py-3 border border-yellow-400/30 text-yellow-400 text-xs font-opensans flex justify-between items-start gap-3">
+            <span>{syncNote}</span>
+            <button onClick={() => setSyncNote(null)} className="shrink-0 text-yellow-400 hover:text-white">×</button>
+          </div>
+        )}
+
         {/* Positionen */}
         {items.length === 0 ? (
           <div className="border border-border p-12 text-center">
@@ -249,19 +350,22 @@ export function ProjectDetailPage() {
           </>
         )}
 
-        {/* Echtzeit-Hinweis */}
-        <div className="mt-6 flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-          <p className="text-xs text-muted font-opensans">
-            Echtzeit-Sync aktiv – Änderungen sofort für alle sichtbar
-          </p>
-        </div>
+        {/* Echtzeit-Hinweis – nur online anzeigen */}
+        {isOnline && (
+          <div className="mt-6 flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+            <p className="text-xs text-muted font-opensans">
+              Echtzeit-Sync aktiv – Änderungen sofort für alle sichtbar
+            </p>
+          </div>
+        )}
       </main>
 
       <AddProductModal
         open={addOpen}
         onClose={() => setAddOpen(false)}
         projectId={project.id}
+        projectName={project.name}
         onAdded={load}
         existingProductIds={items.map((i) => i.product_id)}
       />
@@ -298,12 +402,15 @@ function ItemRow({
   const gesamtVK = item.menge * (item.product?.vk_preis ?? 0)
 
   return (
-    <div className="px-4 py-4 hover:bg-surface transition-colors">
+    <div className={`px-4 py-4 hover:bg-surface transition-colors ${item._offline ? 'opacity-70' : ''}`}>
       {/* Mobile Layout */}
       <div className="md:hidden space-y-2">
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
-            <p className="font-opensans text-sm text-white font-medium">{item.product?.produkt ?? item.product_name ?? '(Ware nicht mehr vorhanden)'}</p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="font-opensans text-sm text-white font-medium">{item.product?.produkt ?? item.product_name ?? '(Ware nicht mehr vorhanden)'}</p>
+              {item._offline && <span className="text-[10px] font-raleway uppercase tracking-widest text-yellow-400 border border-yellow-400/40 px-1.5 py-0.5">Ausstehend</span>}
+            </div>
             <p className="text-xs text-muted font-opensans mt-0.5">
               {[item.product?.staerke_mm && `${item.product.staerke_mm} mm`, item.product?.masse_mm].filter(Boolean).join(' · ')}
             </p>
@@ -322,7 +429,9 @@ function ItemRow({
         </div>
         <div className="flex items-center gap-4 text-xs font-opensans text-muted">
           {/* Menge auf Mobile auch editierbar */}
-          {isEditing ? (
+          {item._offline ? (
+            <span>Menge: <span className="text-white">{item.menge}</span></span>
+          ) : isEditing ? (
             <div className="flex items-center gap-2">
               <span>Menge:</span>
               <input
@@ -357,7 +466,10 @@ function ItemRow({
       {/* Desktop Layout */}
       <div className="hidden md:grid grid-cols-[2fr_1fr_1fr_1fr_1fr_auto] gap-4 items-center">
         <div className="min-w-0">
-          <p className="font-opensans text-sm text-white font-medium truncate">{item.product?.produkt ?? item.product_name ?? '(Ware nicht mehr vorhanden)'}</p>
+          <div className="flex items-center gap-2">
+            <p className="font-opensans text-sm text-white font-medium truncate">{item.product?.produkt ?? item.product_name ?? '(Ware nicht mehr vorhanden)'}</p>
+            {item._offline && <span className="shrink-0 text-[10px] font-raleway uppercase tracking-widest text-yellow-400 border border-yellow-400/40 px-1.5 py-0.5">Ausstehend</span>}
+          </div>
           <p className="text-xs text-muted font-opensans">
             {[
               item.product?.staerke_mm && `${item.product.staerke_mm} mm`,
@@ -370,7 +482,9 @@ function ItemRow({
 
         {/* Menge editierbar */}
         <div>
-          {isEditing ? (
+          {item._offline ? (
+            <span className="font-opensans text-sm text-white">{item.menge}</span>
+          ) : isEditing ? (
             <div className="flex items-center gap-1">
               <input
                 type="number"
@@ -385,14 +499,16 @@ function ItemRow({
               <button onClick={() => onEditSave(item.id)} className="text-green-400 text-xs hover:text-green-300">✓</button>
               <button onClick={onEditCancel} className="text-muted text-xs hover:text-white">✕</button>
             </div>
-          ) : (
+          ) : canEditItem ? (
             <button
               onClick={() => onEditStart(item.id, item.menge)}
               className="font-opensans text-sm text-white hover:underline"
               title="Menge bearbeiten"
             >
-              {item.menge}
+              {item.menge} <span className="text-muted text-xs">✎</span>
             </button>
+          ) : (
+            <span className="font-opensans text-sm text-white">{item.menge}</span>
           )}
         </div>
 

@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { Header } from '../components/Header'
 import { CreateProjectModal } from '../components/CreateProjectModal'
-import { syncProSonata, shouldAutoSync, PROSONATA_KEY } from '../lib/prosonata'
+import { getQueue, removeFromQueue } from '../lib/offlineQueue'
 import type { Project } from '../types'
 
 const STATUS_LABELS: Record<string, string> = {
@@ -77,7 +77,6 @@ export function ProjectsPage() {
   const [search, setSearch] = useState('')
   const [itemCounts, setItemCounts] = useState<Record<string, number>>(() => readCache()?.counts ?? {})
   const [createOpen, setCreateOpen] = useState(false)
-  const syncing = useRef(false)
   const mounted = useRef(true)
   // Debounce-Timer für Realtime-Updates (verhindert Spam bei vielen gleichzeitigen Änderungen)
   const realtimeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -178,31 +177,6 @@ export function ProjectsPage() {
     }
   }, [load, debouncedLoad])
 
-  // Auto-Sync ProSonata (Admin) – bei Öffnen und bei Tab-Focus
-  useEffect(() => {
-    if (!isAdmin) return
-    const apiKey = localStorage.getItem(PROSONATA_KEY)
-    if (!apiKey) return
-
-    const doSync = async () => {
-      if (syncing.current || !shouldAutoSync()) return
-      syncing.current = true
-      await syncProSonata(apiKey)
-      syncing.current = false
-      load()
-    }
-
-    doSync()
-
-    const onFocus = () => doSync()
-    const onVisibility = () => { if (!document.hidden) doSync() }
-    window.addEventListener('focus', onFocus)
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => {
-      window.removeEventListener('focus', onFocus)
-      document.removeEventListener('visibilitychange', onVisibility)
-    }
-  }, [isAdmin, load])
 
   // Admin/Projektleiter: abgelaufene Projekte automatisch schließen
   useEffect(() => {
@@ -222,6 +196,10 @@ export function ProjectsPage() {
     if (!window.confirm('Projekt wirklich löschen? Alle Positionen werden ebenfalls gelöscht.')) return
     await supabase.from('project_items').delete().eq('project_id', id)
     await supabase.from('projects').delete().eq('id', id)
+    // Offline-Buchungen für dieses Projekt aus der Warteschlange entfernen
+    getQueue().filter(e => e.projectId === id).forEach(e => removeFromQueue(e.id))
+    window.dispatchEvent(new CustomEvent('offlineQueueUpdated', { detail: { synced: 0, rejected: [] } }))
+    invalidateCache() // stale Eintrag sofort aus dem Cache werfen
     load()
   }
 
@@ -268,13 +246,10 @@ export function ProjectsPage() {
       >
         {/* Offline / Netzwerkfehler-Banner */}
         {(!isOnline || networkError) && (
-          <div className="mb-4 px-4 py-3 border border-yellow-400/40 text-yellow-400 font-opensans text-xs flex items-center gap-2">
-            <span>⚡</span>
-            <span>
-              {!isOnline
-                ? 'Kein Internet – gespeicherte Daten werden angezeigt. Änderungen sind erst nach Verbindungswiederherstellung möglich.'
-                : 'Verbindungsproblem – Daten möglicherweise veraltet.'}
-            </span>
+          <div className="mb-4 px-4 py-3 border border-yellow-400/40 text-yellow-400 font-opensans text-xs text-center">
+            {!isOnline
+              ? 'Kein Internet – gespeicherte Daten werden angezeigt. Änderungen sind erst nach Verbindungswiederherstellung möglich.'
+              : 'Verbindungsproblem – Daten möglicherweise veraltet.'}
           </div>
         )}
 
