@@ -2,10 +2,11 @@ import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { Header } from '../components/Header'
-import { parseProductExcel, parseProductExcelFromUrl } from '../lib/excel'
-import { syncProSonata, PROSONATA_KEY, PROSONATA_LAST_SYNC } from '../lib/prosonata'
+import { parseProductExcel, parseProductExcelFromUrl, exportVerbrauchToExcel } from '../lib/excel'
+import type { VerbrauchRow } from '../lib/excel'
 import type { Product, Profile } from '../types'
 import { Navigate } from 'react-router-dom'
+import { clearProductsCache } from '../components/AddProductModal'
 
 const STORAGE_BUCKET = 'produktliste'
 const STORAGE_FILE = 'produktliste.xlsx'
@@ -40,6 +41,7 @@ export function AdminPage() {
 
         <div className="space-y-12">
           <ProductImport />
+          <VerbrauchsExport />
           {isAdmin && <ProSonataSync />}
           {isAdmin && <UserManagement />}
         </div>
@@ -50,18 +52,34 @@ export function AdminPage() {
 
 // ── Produkt-Import ───────────────────────────────────────────
 
-async function saveProducts(incoming: Omit<Product, 'id' | 'created_at' | 'updated_at'>[]) {
+// verfuegbar wird NICHT mitgesendet – der DB-Trigger berechnet es atomar
+type ProductImportRow = Omit<Product, 'id' | 'created_at' | 'updated_at' | 'verfuegbar'>
+
+// Eindeutiger Schlüssel pro Produkt: Name + Stärke + Maße (für Varianten wie MDF 8mm / 16mm / 19mm)
+function productKey(produkt: string, staerke_mm: string | null, masse_mm: string | null) {
+  return `${produkt}|${staerke_mm ?? ''}|${masse_mm ?? ''}`
+}
+
+async function saveProducts(incoming: ProductImportRow[]) {
   if (incoming.length === 0) throw new Error('Keine Waren in der Datei gefunden')
 
-  // Bestehende Produkte laden um IDs zu erhalten
-  const { data: existing } = await supabase.from('products').select('id, produkt')
-  const existingMap = new Map((existing ?? []).map(p => [p.produkt, p.id as string]))
+  // Bestehende Produkte laden um IDs zu erhalten (inkl. Stärke + Maße für Variantenmatching)
+  const { data: existing, error: fetchError } = await supabase
+    .from('products')
+    .select('id, produkt, staerke_mm, masse_mm')
+  if (fetchError) throw new Error('Fehler beim Laden der Warenliste: ' + fetchError.message)
 
-  const toUpdate: (Omit<Product, 'created_at' | 'updated_at'>)[] = []
-  const toInsert: Omit<Product, 'id' | 'created_at' | 'updated_at'>[] = []
+  // Composite Key → ID Map
+  const existingMap = new Map(
+    (existing ?? []).map(p => [productKey(p.produkt, p.staerke_mm, p.masse_mm), p.id as string])
+  )
+
+  const toUpdate: (ProductImportRow & { id: string })[] = []
+  const toInsert: ProductImportRow[] = []
 
   for (const p of incoming) {
-    const existingId = existingMap.get(p.produkt)
+    const key = productKey(p.produkt, p.staerke_mm, p.masse_mm)
+    const existingId = existingMap.get(key)
     if (existingId) {
       toUpdate.push({ ...p, id: existingId })
     } else {
@@ -80,6 +98,7 @@ async function saveProducts(incoming: Omit<Product, 'id' | 'created_at' | 'updat
   return incoming.length
 }
 
+
 function ProductImport() {
   const fileRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
@@ -95,47 +114,46 @@ function ProductImport() {
     })
   }, [status])
 
-  // Neue Datei hochladen (ersetzt die gespeicherte Excel)
+  // Neue Excel hochladen – speichert sie und importiert alle Waren
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
     setUploading(true)
     setStatus(null)
-
     try {
       const { error: uploadError } = await supabase.storage
         .from(STORAGE_BUCKET)
         .upload(STORAGE_FILE, file, { upsert: true, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-
       if (uploadError) throw new Error('Upload fehlgeschlagen: ' + uploadError.message)
-
       const products = await parseProductExcel(file)
       const count = await saveProducts(products)
-
-      setStatus({ type: 'success', msg: `✓ ${count} Waren hochgeladen und synchronisiert. Das gesamte Team sieht jetzt die aktuellen Waren.` })
+      clearProductsCache()
+      setStatus({ type: 'success', msg: `✓ ${count} Waren importiert.` })
       setHasFile(true)
     } catch (err) {
       setStatus({ type: 'error', msg: String(err) })
     }
-
     setUploading(false)
     if (fileRef.current) fileRef.current.value = ''
   }
 
-  // Automatisch aus gespeicherter Excel aktualisieren (kein Upload nötig)
-  const handleAutoSync = async () => {
+  // Gespeicherte Excel erneut einlesen und Warenliste aktualisieren
+  const handleSync = async () => {
     setSyncing(true)
     setStatus(null)
     try {
       const url = getProduktlisteUrl()
       const products = await parseProductExcelFromUrl(url)
       const count = await saveProducts(products)
-      setStatus({ type: 'success', msg: `✓ ${count} Waren aktualisiert – neue Kategorien und Waren wurden automatisch hinzugefügt.` })
+      clearProductsCache()
+      setStatus({ type: 'success', msg: `✓ ${count} Waren aktualisiert.` })
     } catch (err) {
       setStatus({ type: 'error', msg: 'Aktualisierung fehlgeschlagen: ' + String(err) })
     }
     setSyncing(false)
   }
+
+  const busy = uploading || syncing
 
   return (
     <section>
@@ -146,28 +164,13 @@ function ProductImport() {
         {productCount !== null && (
           <><span className="text-white">{productCount}</span> Waren gespeichert · </>
         )}
-        Klicke auf „Excel aktualisieren" um neue Waren automatisch einzulesen. Nur wenn die Excel-Datei selbst ausgetauscht wurde, neu hochladen.
+        Excel hochladen um die Warenliste zu befüllen. Bei Änderungen an der Excel einfach auf „Aktualisieren" drücken – die App liest sie erneut ein.
       </p>
 
-      <div className="border border-border p-6 flex flex-col gap-4">
-        {/* Primär: Automatische Aktualisierung */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
-          <button
-            onClick={handleAutoSync}
-            disabled={syncing || uploading || !hasFile}
-            className="bg-white text-black px-6 py-3 font-raleway text-xs uppercase tracking-widest hover:bg-muted transition-colors disabled:opacity-40 whitespace-nowrap"
-          >
-            {syncing ? 'Aktualisiert…' : '↻ Excel aktualisieren'}
-          </button>
-          <p className="text-white font-opensans text-xs">
-            {hasFile
-              ? 'Liest die gespeicherte Excel automatisch – kein Upload nötig.'
-              : 'Zuerst Excel hochladen (einmalig).'}
-          </p>
-        </div>
+      <div className="border border-border p-6 flex flex-col gap-5">
 
-        {/* Sekundär: Neue Datei hochladen */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 pt-3 border-t border-border">
+        {/* Excel hochladen */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
           <input
             ref={fileRef}
             type="file"
@@ -178,12 +181,195 @@ function ProductImport() {
           />
           <label
             htmlFor="product-file"
-            className={`cursor-pointer border border-border text-white px-6 py-3 font-raleway text-xs uppercase tracking-widest hover:bg-white hover:text-black transition-colors whitespace-nowrap ${uploading || syncing ? 'opacity-40 pointer-events-none' : ''}`}
+            className={`cursor-pointer bg-white text-black px-6 py-3 font-raleway text-xs uppercase tracking-widest hover:bg-muted transition-colors whitespace-nowrap ${busy ? 'opacity-40 pointer-events-none' : ''}`}
           >
-            {uploading ? 'Wird hochgeladen…' : '↑ Neue Excel hochladen'}
+            {uploading ? 'Wird hochgeladen…' : '↑ Excel hochladen'}
           </label>
           <p className="text-muted font-opensans text-xs">
-            Nur nötig wenn die Datei selbst ersetzt werden soll (.xlsx, .xls)
+            {hasFile
+              ? 'Neue Datei ersetzt die gespeicherte (.xlsx, .xls)'
+              : 'Einmalig hochladen um die Warenliste zu starten (.xlsx, .xls)'}
+          </p>
+        </div>
+
+        {/* Aktualisieren */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 pt-4 border-t border-border">
+          <button
+            onClick={handleSync}
+            disabled={busy || !hasFile}
+            className="border border-border text-white px-6 py-3 font-raleway text-xs uppercase tracking-widest hover:bg-white hover:text-black transition-colors disabled:opacity-40 whitespace-nowrap"
+          >
+            {syncing ? 'Aktualisiert…' : '↻ Aktualisieren'}
+          </button>
+          <p className="text-muted font-opensans text-xs">
+            Excel wurde geändert? Die App liest die gespeicherte Datei erneut ein.
+          </p>
+        </div>
+
+      </div>
+
+      {status && (
+        <div className={`mt-3 px-4 py-3 border text-xs font-opensans ${
+          status.type === 'success' ? 'border-green-400/30 text-green-400' : 'border-red-400/30 text-red-400'
+        }`}>
+          {status.msg}
+        </div>
+      )}
+    </section>
+  )
+}
+
+// ── Verbrauchsbericht Export ──────────────────────────────────
+
+function localDateStr(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+// Lokale Zeitzone für Supabase-Datumsfilter (z.B. +02:00 für Österreich)
+function localTzSuffix(): string {
+  const offset = -new Date().getTimezoneOffset() // in Minuten, positiv für UTC+
+  const sign = offset >= 0 ? '+' : '-'
+  const abs = Math.abs(offset)
+  const hh = String(Math.floor(abs / 60)).padStart(2, '0')
+  const mm = String(abs % 60).padStart(2, '0')
+  return `${sign}${hh}:${mm}`
+}
+
+function VerbrauchsExport() {
+  // Lazy initializer: wird nur einmal beim Mount berechnet, nicht bei jedem Re-Render
+  const [startDate, setStartDate] = useState(() => {
+    const now = new Date()
+    return localDateStr(new Date(now.getFullYear(), now.getMonth(), 1))
+  })
+  const [endDate, setEndDate] = useState(() => localDateStr(new Date()))
+  const [exporting, setExporting] = useState(false)
+  const [status, setStatus] = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
+
+  const handleExport = async () => {
+    if (!startDate || !endDate) return
+    if (startDate > endDate) {
+      setStatus({ type: 'error', msg: '„Von"-Datum darf nicht nach dem „Bis"-Datum liegen.' })
+      return
+    }
+    setExporting(true)
+    setStatus(null)
+
+    try {
+      const { data, error } = await supabase
+        .from('project_items')
+        .select(`
+          menge,
+          product_name,
+          product_kategorie,
+          created_at,
+          product:products (
+            produkt,
+            kategorie,
+            haendler,
+            staerke_mm,
+            masse_mm,
+            ek_preis,
+            vk_preis
+          )
+        `)
+        .gte('created_at', startDate + 'T00:00:00' + localTzSuffix())
+        .lte('created_at', endDate + 'T23:59:59.999' + localTzSuffix())
+
+      if (error) throw new Error(error.message)
+
+      if (!data || data.length === 0) {
+        setStatus({ type: 'error', msg: 'Keine Buchungen im gewählten Zeitraum gefunden.' })
+        setExporting(false)
+        return
+      }
+
+      // Aggregieren nach Produktname (selbe Ware aus verschiedenen Projekten addieren)
+      const map = new Map<string, VerbrauchRow>()
+      for (const item of data) {
+        const prod = item.product as {
+          produkt?: string; kategorie?: string | null; haendler?: string | null
+          staerke_mm?: string | null; masse_mm?: string | null
+          ek_preis?: number | null; vk_preis?: number | null
+        } | null
+        const key = prod?.produkt ?? (item.product_name as string | null) ?? '(unbekannt)'
+        const existing = map.get(key)
+        if (existing) {
+          existing.total_menge += Number(item.menge)
+        } else {
+          map.set(key, {
+            produkt: key,
+            kategorie: prod?.kategorie ?? (item.product_kategorie as string | null) ?? null,
+            haendler: prod?.haendler ?? null,
+            staerke_mm: prod?.staerke_mm ?? null,
+            masse_mm: prod?.masse_mm ?? null,
+            ek_preis: prod?.ek_preis ?? null,
+            vk_preis: prod?.vk_preis ?? null,
+            total_menge: Number(item.menge),
+          })
+        }
+      }
+
+      const rows = Array.from(map.values()).sort((a, b) =>
+        (a.kategorie ?? '').localeCompare(b.kategorie ?? '', 'de') ||
+        a.produkt.localeCompare(b.produkt, 'de')
+      )
+
+      exportVerbrauchToExcel(rows, startDate, endDate)
+      setStatus({ type: 'success', msg: `✓ ${rows.length} verschiedene Waren im Zeitraum exportiert.` })
+    } catch (err) {
+      setStatus({ type: 'error', msg: 'Export fehlgeschlagen: ' + String(err) })
+    }
+    setExporting(false)
+  }
+
+  return (
+    <section>
+      <h2 className="font-raleway font-semibold text-white uppercase tracking-widest text-sm mb-1">
+        Verbrauchsbericht
+      </h2>
+      <p className="text-muted font-opensans text-xs mb-6">
+        Alle verwendeten Waren eines Zeitraums als Excel – zusammengefasst über alle Projekte, mit Mengen und Preisen.
+      </p>
+
+      <div className="border border-border p-6 space-y-5">
+        <div className="flex flex-wrap gap-6">
+          <div>
+            <label className="block text-xs uppercase tracking-widest text-muted font-raleway mb-2">
+              Von (inkl.)
+            </label>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="bg-black border border-border text-white px-3 py-2.5 font-opensans text-sm focus:border-white outline-none transition-colors text-left"
+              style={{ colorScheme: 'dark', width: '160px' }}
+            />
+          </div>
+          <div>
+            <label className="block text-xs uppercase tracking-widest text-muted font-raleway mb-2">
+              Bis (inkl.)
+            </label>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="bg-black border border-border text-white px-3 py-2.5 font-opensans text-sm focus:border-white outline-none transition-colors text-left"
+              style={{ colorScheme: 'dark', width: '160px' }}
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+          <button
+            onClick={handleExport}
+            disabled={exporting || !startDate || !endDate}
+            className="bg-white text-black px-6 py-3 font-raleway text-xs uppercase tracking-widest hover:bg-muted transition-colors disabled:opacity-40 whitespace-nowrap"
+          >
+            {exporting ? 'Wird erstellt…' : '↓ Verbrauchsbericht als Excel'}
+          </button>
+          <p className="text-muted font-opensans text-xs">
+            Alle Buchungen des Zeitraums, gleiche Waren addiert. Dateiname enthält beide Daten.
           </p>
         </div>
       </div>
@@ -199,33 +385,22 @@ function ProductImport() {
   )
 }
 
-// ── ProSonata Synchronisierung ───────────────────────────────
+// ── ProSonata Sync ───────────────────────────────────────────
 
 function ProSonataSync() {
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem(PROSONATA_KEY) ?? '')
   const [syncing, setSyncing] = useState(false)
   const [status, setStatus] = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
-  const [lastSync, setLastSync] = useState<string | null>(() => localStorage.getItem(PROSONATA_LAST_SYNC))
 
-  const sync = async () => {
-    if (!apiKey.trim()) {
-      setStatus({ type: 'error', msg: 'Bitte zuerst den ProSonata API-Key eingeben.' })
-      return
-    }
-    localStorage.setItem(PROSONATA_KEY, apiKey.trim())
+  const handleSync = async () => {
     setSyncing(true)
     setStatus(null)
-
-    const result = await syncProSonata(apiKey.trim())
-    if (result.error && result.count === 0) {
-      setStatus({ type: 'error', msg: 'Sync fehlgeschlagen: ' + result.error })
-    } else {
-      const now = localStorage.getItem(PROSONATA_LAST_SYNC) ?? new Date().toLocaleString('de-AT')
-      setLastSync(now)
-      setStatus({
-        type: 'success',
-        msg: `✓ ${result.count} Projekte aus ProSonata synchronisiert. Projekte mit „intern" in der Firma/Gruppe werden automatisch als Intern markiert.`,
-      })
+    try {
+      const res = await fetch('/api/sync-prosonata', { method: 'POST' })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? 'Unbekannter Fehler')
+      setStatus({ type: 'success', msg: `✓ ${json.count} Projekte synchronisiert.` })
+    } catch (err) {
+      setStatus({ type: 'error', msg: 'Sync fehlgeschlagen: ' + String(err) })
     }
     setSyncing(false)
   }
@@ -236,38 +411,20 @@ function ProSonataSync() {
         ProSonata Synchronisierung
       </h2>
       <p className="text-muted font-opensans text-xs mb-6">
-        Projekte aus ProSonata automatisch übernehmen. Synchronisiert sich auch automatisch wenn die App geöffnet wird (alle 2 Minuten).
-        {lastSync && <span className="ml-2 text-white">Letzter Sync: {lastSync}</span>}
+        Projekte werden automatisch stündlich vom Server synchronisiert. Bei Bedarf hier manuell aktualisieren.
       </p>
-
-      <div className="border border-border p-6 space-y-4">
-        <div>
-          <label className="block text-xs uppercase tracking-widest text-muted font-raleway mb-1.5">
-            ProSonata API-Key
-          </label>
-          <div className="flex gap-3 flex-col sm:flex-row">
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="ProSonata API-Key eingeben"
-              className="flex-1 bg-transparent border border-border text-white px-4 py-2.5 font-opensans text-sm focus:border-white outline-none transition-colors placeholder-muted"
-            />
-            <button
-              onClick={sync}
-              disabled={syncing}
-              className="bg-white text-black px-6 py-2.5 font-raleway text-xs uppercase tracking-widest hover:bg-muted transition-colors disabled:opacity-40 whitespace-nowrap"
-            >
-              {syncing ? 'Synchronisiere...' : '↻ Jetzt synchronisieren'}
-            </button>
-          </div>
-        </div>
+      <div className="border border-border p-6 flex flex-col sm:flex-row items-start sm:items-center gap-4">
+        <button
+          onClick={handleSync}
+          disabled={syncing}
+          className="border border-border text-white px-6 py-3 font-raleway text-xs uppercase tracking-widest hover:bg-white hover:text-black transition-colors disabled:opacity-40 whitespace-nowrap"
+        >
+          {syncing ? 'Synchronisiere…' : '↻ Jetzt synchronisieren'}
+        </button>
         <p className="text-muted font-opensans text-xs">
-          Den API-Key finden Sie in ProSonata unter{' '}
-          <span className="text-white">System → Integrationen → API-Key generieren</span>
+          Lädt alle Projekte erneut aus ProSonata und aktualisiert die App.
         </p>
       </div>
-
       {status && (
         <div className={`mt-3 px-4 py-3 border text-xs font-opensans ${
           status.type === 'success' ? 'border-green-400/30 text-green-400' : 'border-red-400/30 text-red-400'
@@ -548,6 +705,7 @@ function UserManagement() {
                   value={u.rolle}
                   onChange={(e) => changeRole(u.id, e.target.value as 'admin' | 'projektleiter' | 'mitarbeiter')}
                   className="bg-black border border-border text-white px-2 py-2 font-opensans text-xs focus:border-white outline-none appearance-none rounded-none min-w-[100px]"
+                  style={{ textAlign: 'center', textAlignLast: 'center' }}
                 >
                   <option value="mitarbeiter">Team</option>
                   <option value="projektleiter">Projektleitung</option>

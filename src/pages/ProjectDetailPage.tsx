@@ -20,7 +20,7 @@ function canEdit(item: ItemWithProduct, userId: string | undefined, isAdminOrPro
 
 export function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>()
-  const { isAdmin, isAdminOrProjektleiter, profile, user } = useAuth()
+  const { isAdminOrProjektleiter, profile, user } = useAuth()
   const [project, setProject] = useState<Project | null>(null)
   const [items, setItems] = useState<ItemWithProduct[]>([])
   const [loading, setLoading] = useState(true)
@@ -81,7 +81,7 @@ export function ProjectDetailPage() {
     return () => { supabase.removeChannel(channel) }
   }, [id, load])
 
-  // Bug 1 Fix: Globales Event von App.tsx empfangen – Seite nach Sync neu laden
+  // Globales Event empfangen: Seite nach Offline-Sync neu laden und Ergebnis anzeigen
   useEffect(() => {
     const handleQueueUpdated = (e: Event) => {
       const { synced, rejected } = (e as CustomEvent<{ synced: number; rejected: string[] }>).detail
@@ -177,9 +177,9 @@ export function ProjectDetailPage() {
   }
 
   const [exporting, setExporting] = useState(false)
-  // „Neue Änderungen" nur in dieser Session zeigen (nach einem Export in dieser Session)
+  // „Neue Änderungen"-Indikator: Zeitstempel des letzten Exports in dieser Session
   const [sessionExportTime, setSessionExportTime] = useState<number | null>(null)
-  // Bug 2 Fix: Offline-Items aus Änderungserkennung ausschließen
+  // Offline-Items ausschließen: sie sind noch nicht in der DB und haben kein verlässliches updated_at
   const onlineItems = items.filter(i => !i._offline)
   const hasNewChanges = sessionExportTime !== null && onlineItems.length > 0 &&
     Math.max(...onlineItems.map(i => new Date(i.updated_at ?? i.created_at).getTime())) > sessionExportTime
