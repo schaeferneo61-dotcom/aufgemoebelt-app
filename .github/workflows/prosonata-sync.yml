@@ -15,15 +15,19 @@ jobs:
     steps:
       - name: ProSonata → Supabase Sync
         run: |
-          response=$(curl -s -o /dev/null -w "%{http_code}" \
+          body=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
             -X POST \
             -H "Content-Type: application/json" \
             https://warenwirtschaft-blush.vercel.app/api/sync-prosonata)
 
-          echo "HTTP Status: $response"
+          http_status=$(echo "$body" | tail -1 | sed 's/HTTP_STATUS://')
+          response_body=$(echo "$body" | sed '$d')
 
-          if [ "$response" != "200" ]; then
-            echo "Sync fehlgeschlagen mit Status $response"
+          echo "HTTP Status: $http_status"
+          echo "Response: $response_body"
+
+          if [ "$http_status" != "200" ]; then
+            echo "Sync fehlgeschlagen mit Status $http_status"
             exit 1
           fi
 
