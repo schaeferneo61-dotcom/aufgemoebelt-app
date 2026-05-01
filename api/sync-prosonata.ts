@@ -81,7 +81,7 @@ export default async function handler(req: any, res: any) {
 
   // Supabase-Client (server-seitig)
   const supabaseUrl = process.env.VITE_SUPABASE_URL
-  const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY
   if (!supabaseUrl || !supabaseKey) {
     return res.status(500).json({ error: 'Supabase-Zugangsdaten fehlen.' })
   }
