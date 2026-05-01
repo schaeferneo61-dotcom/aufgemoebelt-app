@@ -1,0 +1,30 @@
+name: ProSonata Auto-Sync
+
+on:
+  schedule:
+    # Alle 5 Minuten (GitHub-Minimum)
+    - cron: '*/5 * * * *'
+  # Manuell auslösbar (verhindert auch das automatische Deaktivieren)
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: ProSonata → Supabase Sync
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            https://warenwirtschaft-blush.vercel.app/api/sync-prosonata)
+
+          echo "HTTP Status: $response"
+
+          if [ "$response" != "200" ]; then
+            echo "Sync fehlgeschlagen mit Status $response"
+            exit 1
+          fi
+
+          echo "Sync erfolgreich"
