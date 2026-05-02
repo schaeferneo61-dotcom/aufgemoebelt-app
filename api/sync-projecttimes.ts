@@ -95,8 +95,21 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json({ ok: true, count: 0, from, to, message: 'Keine Einträge im Zeitraum.' })
     }
 
-    const rows = allTimes
-      .map((t) => {
+    type TimeRow = {
+      prosonata_time_id: string
+      date: string
+      employee_id: string
+      employee_first_name: string
+      employee_last_name: string
+      project_id: string
+      project_name: string
+      is_internal: boolean
+      hours: number | null
+      synced_at: string
+    }
+
+    const rows: TimeRow[] = allTimes
+      .map((t): TimeRow | null => {
         const timeId = String(t.projectTimeID ?? t.id ?? '')
         if (!timeId) return null
 
@@ -119,7 +132,7 @@ export default async function handler(req: any, res: any) {
           synced_at: new Date().toISOString(),
         }
       })
-      .filter(Boolean) as NonNullable<ReturnType<typeof rows[0]['valueOf']>>[]
+      .filter((r): r is TimeRow => r !== null)
 
     // In Batches upserten
     const BATCH = 500
