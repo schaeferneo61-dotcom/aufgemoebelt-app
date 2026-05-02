@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/sync-prosonata",
+      "schedule": "0 6 * * *"
+    }
+  ]
+}

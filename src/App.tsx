@@ -6,6 +6,7 @@ import { LoginPage } from './pages/LoginPage'
 import { ProjectsPage } from './pages/ProjectsPage'
 import { ProjectDetailPage } from './pages/ProjectDetailPage'
 import { AdminPage } from './pages/AdminPage'
+import { ArbeitszeitPage } from './pages/ArbeitszeitPage'
 import { processQueue, getQueueCount } from './lib/offlineQueue'
 
 export default function App() {
@@ -49,6 +50,14 @@ export default function App() {
             element={
               <ProtectedRoute adminOnly>
                 <AdminPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/arbeitszeit"
+            element={
+              <ProtectedRoute>
+                <ArbeitszeitPage />
               </ProtectedRoute>
             }
           />

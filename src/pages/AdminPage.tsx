@@ -5,7 +5,7 @@ import { Header } from '../components/Header'
 import { parseProductExcel, parseProductExcelFromUrl, exportVerbrauchToExcel } from '../lib/excel'
 import type { VerbrauchRow } from '../lib/excel'
 import type { Product, Profile } from '../types'
-import { Navigate } from 'react-router-dom'
+import { Navigate, Link } from 'react-router-dom'
 import { clearProductsCache } from '../components/AddProductModal'
 
 const STORAGE_BUCKET = 'produktliste'
@@ -42,11 +42,38 @@ export function AdminPage() {
         <div className="space-y-12">
           <ProductImport />
           <VerbrauchsExport />
+          <ArbeitszeitLink />
           {isAdmin && <ProSonataSync />}
           {isAdmin && <UserManagement />}
         </div>
       </main>
     </div>
+  )
+}
+
+// ── Arbeitszeit-Link ─────────────────────────────────────────
+
+function ArbeitszeitLink() {
+  return (
+    <section>
+      <h2 className="font-raleway font-semibold text-white uppercase tracking-widest text-sm mb-1">
+        Arbeitszeit
+      </h2>
+      <p className="text-muted font-opensans text-xs mb-6">
+        Wochenübersicht aller Mitarbeiter aus ProSonata · Beta
+      </p>
+      <div className="border border-border p-6 flex flex-col sm:flex-row items-start sm:items-center gap-4">
+        <Link
+          to="/arbeitszeit"
+          className="bg-white text-black px-6 py-3 font-raleway text-xs uppercase tracking-widest hover:bg-muted transition-colors whitespace-nowrap"
+        >
+          Arbeitszeit öffnen →
+        </Link>
+        <p className="text-muted font-opensans text-xs">
+          Matrix aller Mitarbeiter mit Farb-Kodierung: extern / intern / kein Projekt.
+        </p>
+      </div>
+    </section>
   )
 }
 
