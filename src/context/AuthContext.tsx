@@ -13,6 +13,7 @@ interface AuthContextType {
   isAdminOrProjektleiter: boolean
   signIn: (email: string, password: string) => Promise<{ error: string | null }>
   signOut: () => Promise<void>
+  refreshProfile: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType | null>(null)
@@ -60,6 +61,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await supabase.auth.signOut()
   }
 
+  async function refreshProfile() {
+    if (user) await loadProfile(user.id)
+  }
+
   const isAdmin = profile?.rolle === 'admin'
   const isProjektleiter = profile?.rolle === 'projektleiter'
   const isAdminOrProjektleiter = isAdmin || isProjektleiter
@@ -74,6 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isAdminOrProjektleiter,
     signIn,
     signOut,
+    refreshProfile,
   }
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

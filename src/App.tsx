@@ -1,17 +1,24 @@
 import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { AuthProvider } from './context/AuthContext'
+import { AuthProvider, useAuth } from './context/AuthContext'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { LoginPage } from './pages/LoginPage'
 import { ProjectsPage } from './pages/ProjectsPage'
 import { ProjectDetailPage } from './pages/ProjectDetailPage'
 import { AdminPage } from './pages/AdminPage'
 import { ArbeitszeitPage } from './pages/ArbeitszeitPage'
+import { NameSetupOverlay } from './components/NameSetupOverlay'
 import { processQueue, getQueueCount } from './lib/offlineQueue'
 
+// Zeigt das Overlay wenn der eingeloggte Benutzer noch keinen Namen hat
+function NameGuard() {
+  const { user, profile, loading } = useAuth()
+  if (loading || !user || !profile) return null
+  if (profile.name && profile.name.trim().length > 0) return null
+  return <NameSetupOverlay />
+}
+
 export default function App() {
-  // Warteschlange global synchronisieren – egal auf welcher Seite der Nutzer ist.
-  // Triggern bei Online-Event UND beim Mount (App kann mit Online + pending Queue starten).
   useEffect(() => {
     const sync = async () => {
       if (!navigator.onLine) return
@@ -19,7 +26,7 @@ export default function App() {
       const result = await processQueue()
       window.dispatchEvent(new CustomEvent('offlineQueueUpdated', { detail: result }))
     }
-    sync() // Initialer Sync beim Mount
+    sync()
     window.addEventListener('online', sync)
     return () => window.removeEventListener('online', sync)
   }, [])
@@ -27,6 +34,7 @@ export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <NameGuard />
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route
