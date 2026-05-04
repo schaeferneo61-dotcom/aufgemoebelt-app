@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, type FormEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { Header } from '../components/Header'
@@ -188,7 +189,6 @@ export function DispoPage() {
 
   const prevWeek = () => setWeekStart(p => { const d = new Date(p); d.setDate(d.getDate() - 7); return d })
   const nextWeek = () => setWeekStart(p => { const d = new Date(p); d.setDate(d.getDate() + 7); return d })
-  const thisWeek = () => setWeekStart(getWeekStart(new Date()))
 
   return (
     <div className="min-h-screen bg-black overflow-x-hidden">
@@ -213,7 +213,7 @@ export function DispoPage() {
         </div>
 
         {/* Wochennavigation */}
-        <div className="flex items-center gap-3 mb-8 flex-wrap">
+        <div className="flex items-center gap-3 mb-8">
           <button
             onClick={prevWeek}
             className="border border-border text-white w-9 h-9 flex items-center justify-center hover:bg-white hover:text-black transition-colors text-sm"
@@ -228,12 +228,6 @@ export function DispoPage() {
             className="border border-border text-white w-9 h-9 flex items-center justify-center hover:bg-white hover:text-black transition-colors text-sm"
           >
             →
-          </button>
-          <button
-            onClick={thisWeek}
-            className="border border-border text-muted px-4 h-9 font-raleway text-[10px] uppercase tracking-widest hover:bg-white hover:text-black transition-colors"
-          >
-            Heute
           </button>
         </div>
 
@@ -352,8 +346,8 @@ function DispoMatrix({ days, holidays }: { days: Date[]; holidays: Set<string> }
         <table className="border-collapse min-w-max w-full">
           <thead>
             <tr>
-              <th className="border border-border px-4 py-2.5 text-left font-raleway text-[10px] uppercase tracking-widest text-muted whitespace-nowrap min-w-[160px] bg-black sticky left-0 z-10">
-                Mitarbeiter
+              <th className="border border-border px-3 py-2.5 text-left font-raleway text-[10px] uppercase tracking-widest text-muted whitespace-nowrap w-[110px] min-w-[110px] bg-black sticky left-0 z-10">
+                Name
               </th>
               {days.map((day, i) => {
                 const dateStr = fmtDate(day)
@@ -388,8 +382,8 @@ function DispoMatrix({ days, holidays }: { days: Date[]; holidays: Set<string> }
             ) : (
               persons.map(person => (
                 <tr key={person.id}>
-                  <td className="border border-border px-4 py-2 bg-black sticky left-0 z-10 whitespace-nowrap">
-                    <span className="font-opensans text-xs text-white">{person.name ?? person.email ?? '–'}</span>
+                  <td className="border border-border px-3 py-2 bg-black sticky left-0 z-10 w-[110px] min-w-[110px] max-w-[110px]">
+                    <span className="font-opensans text-xs text-white block truncate">{person.name ?? person.email ?? '–'}</span>
                   </td>
                   {days.map((day) => {
                     const dateStr = fmtDate(day)
@@ -834,11 +828,13 @@ function MeineDispo({
   userId: string | null
   userName: string | null
 }) {
+  const navigate = useNavigate()
   const [eintraege, setEintraege] = useState<DispoEintrag[]>([])
   const [loading, setLoading] = useState(true)
 
   const from = fmtDate(days[0])
   const to = fmtDate(days[6])
+  const todayStr = fmtDate(new Date())
 
   useEffect(() => {
     if (!userId) { setLoading(false); return }
@@ -858,7 +854,6 @@ function MeineDispo({
     setLoading(false)
   }
 
-  // Für jeden Tag: welche Einträge sind aktiv?
   const byDate = useMemo(() => {
     const m = new Map<string, DispoEintrag[]>()
     for (const e of eintraege) {
@@ -876,6 +871,14 @@ function MeineDispo({
     return m
   }, [eintraege, days])
 
+  if (!userId) {
+    return (
+      <div className="border border-border p-8 text-center">
+        <p className="font-opensans text-sm text-muted">Kein Benutzer-Profil gefunden.</p>
+      </div>
+    )
+  }
+
   if (loading) {
     return (
       <div className="flex items-center gap-2 text-muted text-sm font-opensans py-12">
@@ -885,102 +888,108 @@ function MeineDispo({
     )
   }
 
-  if (!userId) {
-    return (
-      <div className="border border-border p-8 text-center">
-        <p className="font-opensans text-sm text-muted">Kein Benutzer-Profil gefunden.</p>
-      </div>
-    )
-  }
-
-  const assignedDays = days.filter(d => (byDate.get(fmtDate(d)) ?? []).length > 0).length
-
   return (
     <div>
-      {/* Persönliche Wochenzusammenfassung */}
-      {userName && (
-        <div className="border border-border px-5 py-4 mb-6 flex items-center justify-between gap-4">
-          <div>
-            <p className="font-raleway font-semibold text-white text-sm uppercase tracking-widest">
-              {userName}
-            </p>
-            <p className="font-opensans text-xs text-muted mt-0.5">
-              {assignedDays === 0
-                ? 'Diese Woche noch keine Zuteilung'
-                : `${assignedDays} ${assignedDays === 1 ? 'Tag' : 'Tage'} eingeteilt`}
-            </p>
-          </div>
-          <ClockIcon className="w-6 h-6 text-white/20 shrink-0" />
-        </div>
-      )}
-
-      <div className="space-y-2">
-      {days.map((day, i) => {
-        const dateStr = fmtDate(day)
-        const isHoliday = holidays.has(dateStr)
-        const isSun = isWeekend(day)
-        const bookings = byDate.get(dateStr) ?? []
-        const isDimmed = isSun || isHoliday
-        const isToday = fmtDate(new Date()) === dateStr
-
-        return (
-          <div
-            key={dateStr}
-            className={`border ${isToday ? 'border-white/40' : 'border-border'} ${isDimmed ? 'opacity-40' : ''}`}
-          >
-            <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border bg-black">
-              <span className={`font-raleway font-semibold text-[10px] uppercase tracking-widest ${isToday ? 'text-white' : 'text-muted'}`}>
-                {DAY_LONG[i]}
-              </span>
-              <span className="font-opensans text-xs text-white/60">
-                {day.getDate()}. {MONTH_NAMES[day.getMonth()]}
-              </span>
-              {isToday && (
-                <span className="font-raleway text-[9px] uppercase tracking-widest text-white/40 border border-white/20 px-1.5 py-0.5">
-                  Heute
-                </span>
-              )}
-              {isHoliday && (
-                <span className="font-opensans text-[9px] text-yellow-400/80 uppercase tracking-wider">
-                  Feiertag
-                </span>
-              )}
-            </div>
-            {bookings.length === 0 ? (
-              <div className="px-4 py-3">
-                <span className="font-opensans text-xs text-muted/50">
-                  {isDimmed ? '–' : 'Kein Projekt zugeteilt'}
-                </span>
-              </div>
-            ) : (
-              <div className="divide-y divide-border">
-                {bookings.map(b => (
-                  <div key={b.id} className="px-4 py-3 flex items-center gap-3">
-                    <div
-                      className="w-4 h-4 shrink-0 border border-border"
-                      style={
-                        b.is_internal
-                          ? { background: 'repeating-linear-gradient(-45deg,#fff,#fff 2px,#000 2px,#000 5px)' }
-                          : { background: '#ffffff' }
-                      }
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="font-opensans text-sm text-white truncate">
-                        {b.projekt_name ?? '(kein Projektname)'}
-                      </p>
-                      <p className="font-opensans text-[10px] text-muted">
-                        {b.is_internal ? 'Intern' : 'Extern'}
-                        {b.notiz ? ` · ${b.notiz}` : ''}
-                      </p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )
-      })}
+      {/* Legende */}
+      <div className="flex items-center gap-5 mb-5 flex-wrap">
+        <LegendItem color={{ background: '#ffffff' }} label="Externes Projekt" />
+        <LegendItem color={{ background: 'repeating-linear-gradient(-45deg,#fff,#fff 3px,#000 3px,#000 6px)' }} label="Internes Projekt" />
+        <LegendItem color={{ background: '#000000', outline: '1px solid #333' }} label="Kein Projekt" />
       </div>
+
+      {/* 7-Tage WebUntis-Grid */}
+      <div className="w-full border-l border-t border-border">
+        {/* Header: Tage */}
+        <div className="grid grid-cols-7">
+          {days.map((day, i) => {
+            const dateStr = fmtDate(day)
+            const isToday = dateStr === todayStr
+            const isHoliday = holidays.has(dateStr)
+            const isSun = isWeekend(day)
+            const isDimmed = isSun || isHoliday
+            return (
+              <div
+                key={dateStr}
+                className="border-r border-b border-border text-center py-3 px-1"
+                style={{ background: isToday ? '#ffffff' : '#000000' }}
+              >
+                <p className={`font-raleway font-semibold text-[10px] uppercase tracking-widest ${
+                  isToday ? 'text-black' : isDimmed ? 'text-muted/40' : 'text-muted'
+                }`}>
+                  {DAY_SHORT[i]}
+                </p>
+                <p className={`font-opensans text-sm font-medium mt-0.5 ${
+                  isToday ? 'text-black' : isDimmed ? 'text-white/30' : 'text-white'
+                }`}>
+                  {day.getDate()}.
+                </p>
+                {isHoliday && (
+                  <p className="font-opensans text-[8px] text-yellow-400/70 mt-0.5 leading-none">
+                    Feiertag
+                  </p>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Inhalt: Projektzellen */}
+        <div className="grid grid-cols-7" style={{ minHeight: '140px' }}>
+          {days.map((day) => {
+            const dateStr = fmtDate(day)
+            const isHoliday = holidays.has(dateStr)
+            const isSun = isWeekend(day)
+            const isDimmed = isSun || isHoliday
+            const bookings = byDate.get(dateStr) ?? []
+            const first = bookings[0]
+
+            let cellStyle: React.CSSProperties
+            if (first) {
+              cellStyle = first.is_internal
+                ? { background: 'repeating-linear-gradient(-45deg,#fff,#fff 3px,#000 3px,#000 6px)' }
+                : { background: '#ffffff' }
+            } else {
+              cellStyle = { background: isDimmed ? '#0a0a0a' : '#000000' }
+            }
+
+            const clickable = !!first?.projekt_id
+            return (
+              <div
+                key={dateStr}
+                className={`border-r border-b border-border p-2 flex flex-col justify-between ${
+                  clickable ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''
+                }`}
+                style={cellStyle}
+                onClick={() => { if (first?.projekt_id) navigate(`/projekt/${first.projekt_id}`) }}
+              >
+                {first ? (
+                  <>
+                    <p
+                      className="font-opensans text-[11px] font-medium leading-snug line-clamp-3"
+                      style={{ color: first.is_internal ? '#ffffff' : '#000000' }}
+                    >
+                      {first.projekt_name ?? '–'}
+                    </p>
+                    {first.notiz && (
+                      <p
+                        className="font-opensans text-[9px] mt-1 opacity-70"
+                        style={{ color: first.is_internal ? '#ffffff' : '#000000' }}
+                      >
+                        {first.notiz}
+                      </p>
+                    )}
+                  </>
+                ) : null}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Name-Badge unten */}
+      {userName && (
+        <p className="font-opensans text-xs text-muted mt-4 text-right">{userName}</p>
+      )}
     </div>
   )
 }
