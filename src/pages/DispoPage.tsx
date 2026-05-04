@@ -172,8 +172,6 @@ export function DispoPage() {
   const { isAdminOrProjektleiter, profile } = useAuth()
   const [weekStart, setWeekStart] = useState(() => getWeekStart(new Date()))
 
-  if (!unlocked) return <DispoPasswordGate onUnlock={() => setUnlocked(true)} />
-
   const days = useMemo(() => getWeekDays(weekStart), [weekStart])
   const holidays = useMemo(() => {
     const years = new Set(days.map(d => d.getFullYear()))
@@ -181,7 +179,6 @@ export function DispoPage() {
     for (const y of years) getAustrianHolidays(y).forEach(h => all.add(h))
     return all
   }, [days])
-
   const weekLabel = useMemo(() => {
     const from = days[0], to = days[6]
     return `${from.getDate()}. ${MONTH_NAMES[from.getMonth()]} – ${to.getDate()}. ${MONTH_NAMES[to.getMonth()]} ${to.getFullYear()}`
@@ -189,6 +186,8 @@ export function DispoPage() {
 
   const prevWeek = () => setWeekStart(p => { const d = new Date(p); d.setDate(d.getDate() - 7); return d })
   const nextWeek = () => setWeekStart(p => { const d = new Date(p); d.setDate(d.getDate() + 7); return d })
+
+  if (!unlocked) return <DispoPasswordGate onUnlock={() => setUnlocked(true)} />
 
   return (
     <div className="min-h-screen bg-black overflow-x-hidden">
