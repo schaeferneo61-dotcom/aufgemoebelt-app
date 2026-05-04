@@ -203,12 +203,12 @@ export function DispoPage() {
         {/* Seitentitel */}
         <div className="border-b border-border pb-6 mb-8 mt-6">
           <h1 className="font-raleway font-semibold text-white text-2xl sm:text-3xl uppercase tracking-widest">
-            Dispo
+            {isAdminOrProjektleiter ? 'Dispo' : (profile?.name ?? 'Dispo')}
           </h1>
           <p className="text-muted font-opensans text-sm mt-1">
             {isAdminOrProjektleiter
               ? 'Mitarbeiter zuteilen und Wochenübersicht verwalten'
-              : 'Meine Zuteilungen für die Woche'}
+              : 'Meine Wochenzuteilung'}
           </p>
         </div>
 
@@ -240,7 +240,7 @@ export function DispoPage() {
         {isAdminOrProjektleiter ? (
           <DispoMatrix days={days} holidays={holidays} />
         ) : (
-          <MeineDispo days={days} holidays={holidays} userId={profile?.id ?? null} />
+          <MeineDispo days={days} holidays={holidays} userId={profile?.id ?? null} userName={profile?.name ?? null} />
         )}
       </main>
     </div>
@@ -827,10 +827,12 @@ function MeineDispo({
   days,
   holidays,
   userId,
+  userName,
 }: {
   days: Date[]
   holidays: Set<string>
   userId: string | null
+  userName: string | null
 }) {
   const [eintraege, setEintraege] = useState<DispoEintrag[]>([])
   const [loading, setLoading] = useState(true)
@@ -891,8 +893,28 @@ function MeineDispo({
     )
   }
 
+  const assignedDays = days.filter(d => (byDate.get(fmtDate(d)) ?? []).length > 0).length
+
   return (
-    <div className="space-y-2">
+    <div>
+      {/* Persönliche Wochenzusammenfassung */}
+      {userName && (
+        <div className="border border-border px-5 py-4 mb-6 flex items-center justify-between gap-4">
+          <div>
+            <p className="font-raleway font-semibold text-white text-sm uppercase tracking-widest">
+              {userName}
+            </p>
+            <p className="font-opensans text-xs text-muted mt-0.5">
+              {assignedDays === 0
+                ? 'Diese Woche noch keine Zuteilung'
+                : `${assignedDays} ${assignedDays === 1 ? 'Tag' : 'Tage'} eingeteilt`}
+            </p>
+          </div>
+          <ClockIcon className="w-6 h-6 text-white/20 shrink-0" />
+        </div>
+      )}
+
+      <div className="space-y-2">
       {days.map((day, i) => {
         const dateStr = fmtDate(day)
         const isHoliday = holidays.has(dateStr)
@@ -904,15 +926,20 @@ function MeineDispo({
         return (
           <div
             key={dateStr}
-            className={`border ${isToday ? 'border-white/40' : 'border-border'} ${isDimmed ? 'opacity-50' : ''}`}
+            className={`border ${isToday ? 'border-white/40' : 'border-border'} ${isDimmed ? 'opacity-40' : ''}`}
           >
             <div className="flex items-center gap-3 px-4 py-2.5 border-b border-border bg-black">
-              <span className="font-raleway font-semibold text-[10px] uppercase tracking-widest text-muted">
+              <span className={`font-raleway font-semibold text-[10px] uppercase tracking-widest ${isToday ? 'text-white' : 'text-muted'}`}>
                 {DAY_LONG[i]}
               </span>
               <span className="font-opensans text-xs text-white/60">
                 {day.getDate()}. {MONTH_NAMES[day.getMonth()]}
               </span>
+              {isToday && (
+                <span className="font-raleway text-[9px] uppercase tracking-widest text-white/40 border border-white/20 px-1.5 py-0.5">
+                  Heute
+                </span>
+              )}
               {isHoliday && (
                 <span className="font-opensans text-[9px] text-yellow-400/80 uppercase tracking-wider">
                   Feiertag
@@ -953,6 +980,7 @@ function MeineDispo({
           </div>
         )
       })}
+      </div>
     </div>
   )
 }
