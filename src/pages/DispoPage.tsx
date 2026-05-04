@@ -94,10 +94,83 @@ interface Projekt {
   typ: 'intern' | 'extern' | null
 }
 
+// ── Passwortschutz ────────────────────────────────────────────────────────────
+
+const DISPO_KEY = 'dispo_unlocked'
+const DISPO_PW = 'EarlyAccess'
+
+function DispoPasswordGate({ onUnlock }: { onUnlock: () => void }) {
+  const [pw, setPw] = useState('')
+  const [error, setError] = useState(false)
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (pw === DISPO_PW) {
+      sessionStorage.setItem(DISPO_KEY, '1')
+      onUnlock()
+    } else {
+      setError(true)
+      setPw('')
+    }
+  }
+
+  return (
+    <div
+      className="min-h-screen bg-black flex flex-col items-center justify-center px-4"
+      style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
+    >
+      <div className="w-full max-w-sm">
+        <div className="mb-8 flex flex-col items-center gap-2">
+          <ClockIcon className="w-10 h-10 text-white/30" />
+          <h1 className="font-raleway font-semibold text-white text-lg uppercase tracking-widest mt-2">
+            Dispo
+          </h1>
+          <p className="text-muted font-opensans text-xs text-center">
+            Diese Funktion befindet sich im Early Access.<br />Bitte Zugangscode eingeben.
+          </p>
+        </div>
+        <div className="border-t border-border mb-6" />
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-xs uppercase tracking-widest text-muted font-raleway mb-2">
+              Zugangscode
+            </label>
+            <input
+              type="password"
+              value={pw}
+              onChange={e => { setPw(e.target.value); setError(false) }}
+              autoFocus
+              autoComplete="off"
+              className="w-full bg-transparent border border-border text-white px-4 py-3.5 font-opensans text-sm focus:border-white outline-none transition-colors placeholder-muted"
+              placeholder="••••••••••"
+            />
+          </div>
+          {error && (
+            <p className="text-red-400 text-xs font-opensans border border-red-400/30 px-4 py-3">
+              Falscher Zugangscode.
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={!pw}
+            className="w-full bg-white text-black py-4 font-raleway font-semibold text-xs uppercase tracking-widest hover:bg-muted transition-colors disabled:opacity-40"
+          >
+            Zugang
+          </button>
+        </form>
+        <div className="border-b border-border mt-6" />
+      </div>
+    </div>
+  )
+}
+
 // ── Hauptseite ────────────────────────────────────────────────────────────────
 
 export function DispoPage() {
+  const [unlocked, setUnlocked] = useState(() => sessionStorage.getItem(DISPO_KEY) === '1')
   const { isAdminOrProjektleiter, profile } = useAuth()
+
+  if (!unlocked) return <DispoPasswordGate onUnlock={() => setUnlocked(true)} />
   const [weekStart, setWeekStart] = useState(() => getWeekStart(new Date()))
 
   const days = useMemo(() => getWeekDays(weekStart), [weekStart])
