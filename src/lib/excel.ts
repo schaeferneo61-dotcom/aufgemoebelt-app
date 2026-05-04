@@ -3,7 +3,10 @@ import type { Product, Project, ProjectItem } from '../types'
 
 // ── IMPORT ──────────────────────────────────────────────────
 
-function parseRows(data: Uint8Array): Omit<Product, 'id' | 'created_at' | 'updated_at'>[] {
+// verfuegbar wird NICHT aus Excel gelesen – DB-Trigger berechnet es atomar
+type ParsedProduct = Omit<Product, 'id' | 'created_at' | 'updated_at' | 'verfuegbar'>
+
+function parseRows(data: Uint8Array): ParsedProduct[] {
   const workbook = XLSX.read(data, { type: 'array', cellStyles: true })
   const sheet = workbook.Sheets[workbook.SheetNames[0]]
 
@@ -73,12 +76,13 @@ function parseRows(data: Uint8Array): Omit<Product, 'id' | 'created_at' | 'updat
   const colEK        = findCol('ek-preis', 'ek preis', 'einkauf', 'ek netto', 'ek_preis')
   const colVK        = findCol('vk-preis', 'vk preis', 'verkauf', 'vk netto', 'vk_preis')
   const colPalette   = findCol('stk/palette', 'palette')
+  const colBestand   = findCol('bestand', 'anzahl', 'lager', 'vorrat', 'stück', 'stuck', 'qty', 'quantity')
 
   // Erster Spaltenindex (für Kategorien-Erkennung)
   const firstCol = colProdukt >= 0 ? colProdukt : 0
 
   let currentKategorie: string | null = null
-  const result: Omit<Product, 'id' | 'created_at' | 'updated_at'>[] = []
+  const result: ParsedProduct[] = []
 
   for (let i = headerRowIdx + 1; i < rawRows.length; i++) {
     const row = rawRows[i]
@@ -131,14 +135,16 @@ function parseRows(data: Uint8Array): Omit<Product, 'id' | 'created_at' | 'updat
       ek_preis: colEK >= 0 ? parseNum(row[colEK]) : null,
       vk_preis: colVK >= 0 ? parseNum(row[colVK]) : null,
       stk_palette: colPalette >= 0 ? toStr(row[colPalette]) : null,
-      bestand: 0,
+      bestand: colBestand >= 0 ? (parseNum(row[colBestand]) ?? 0) : 0,
+      // verfuegbar wird NICHT gesetzt – BEFORE INSERT Trigger setzt verfuegbar = bestand,
+      // AFTER UPDATE OF bestand Trigger recalculiert verfuegbar bei Updates
     })
   }
 
   return result.filter((p) => p.produkt.length > 0)
 }
 
-export async function parseProductExcelFromUrl(url: string): Promise<Omit<Product, 'id' | 'created_at' | 'updated_at'>[]> {
+export async function parseProductExcelFromUrl(url: string): Promise<ParsedProduct[]> {
   const downloadUrl = url.includes('download=1') ? url : url + (url.includes('?') ? '&' : '?') + 'download=1'
   const response = await fetch(downloadUrl)
   if (!response.ok) throw new Error('Datei konnte nicht geladen werden (Status ' + response.status + ')')
@@ -147,7 +153,7 @@ export async function parseProductExcelFromUrl(url: string): Promise<Omit<Produc
   return parseRows(data)
 }
 
-export function parseProductExcel(file: File): Promise<Omit<Product, 'id' | 'created_at' | 'updated_at'>[]> {
+export function parseProductExcel(file: File): Promise<ParsedProduct[]> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = (e) => {
@@ -162,6 +168,440 @@ export function parseProductExcel(file: File): Promise<Omit<Product, 'id' | 'cre
     reader.onerror = () => reject(new Error('Datei konnte nicht geöffnet werden'))
     reader.readAsArrayBuffer(file)
   })
+}
+
+// ── Bestand-Export (aktueller Stand aus DB) ──────────────────
+
+export function exportBestandToExcel(products: Product[]): void {
+  const wb = XLSX.utils.book_new()
+  const rows: (string | number)[][] = []
+
+  const BLACK = '000000', WHITE = 'FFFFFF', GREY = '111111', LIGHTGREY = '1A1A1A', MUTED = '888888'
+  const RED = 'FF4444', YELLOW = 'FFAA00', GREEN = '44BB88'
+
+  // Titel
+  const today = new Date().toLocaleDateString('de-AT')
+  rows.push(['aufgemoebelt – Aktueller Lagerbestand', '', '', '', '', '', ''])
+  rows.push([`Stand: ${today}`, '', '', '', '', '', ''])
+  rows.push([]) // Leerzeile
+
+  // Header
+  rows.push(['Ware', 'Kategorie', 'Händler', 'Bestand (Original)', 'Verbucht', 'Verfügbar', 'Status'])
+  const headerRowIdx = rows.length - 1
+
+  const sorted = [...products].sort((a, b) =>
+    (a.kategorie ?? '').localeCompare(b.kategorie ?? '', 'de') ||
+    a.produkt.localeCompare(b.produkt, 'de')
+  )
+
+  for (const p of sorted) {
+    const verbucht = Math.max(0, p.bestand - p.verfuegbar)
+    const status = p.verfuegbar <= 0 ? 'Nicht verfügbar' : p.verfuegbar <= 5 ? 'Niedrig' : 'OK'
+    rows.push([p.produkt, p.kategorie ?? '', p.haendler ?? '', p.bestand, verbucht, p.verfuegbar, status])
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(rows)
+  ws['!cols'] = [{ wch: 36 }, { wch: 22 }, { wch: 18 }, { wch: 18 }, { wch: 12 }, { wch: 12 }, { wch: 16 }]
+
+  const cols = 7
+  const colL = (i: number) => String.fromCharCode(65 + i)
+  const gridBorder = {
+    top: { style: 'thin', color: { rgb: '333333' } }, bottom: { style: 'thin', color: { rgb: '333333' } },
+    left: { style: 'thin', color: { rgb: '333333' } }, right: { style: 'thin', color: { rgb: '333333' } },
+  }
+
+  const S = (ref: string, style: object) => {
+    if (!ws[ref]) ws[ref] = { v: '', t: 's' }
+    ws[ref].s = style
+  }
+
+  const titleStyle  = { font: { bold: true, color: { rgb: WHITE }, sz: 14, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: BLACK } } }
+  const dateStyle   = { font: { color: { rgb: MUTED }, sz: 9, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: BLACK } } }
+  const emptyStyle  = { fill: { patternType: 'solid', fgColor: { rgb: BLACK } } }
+  const headerStyle = { font: { bold: true, color: { rgb: WHITE }, sz: 10, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: GREY } }, alignment: { horizontal: 'center' }, border: gridBorder }
+  const cellStyle   = { font: { color: { rgb: WHITE }, sz: 10, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: LIGHTGREY } }, alignment: { horizontal: 'left' }, border: gridBorder }
+  const numStyle    = { font: { color: { rgb: WHITE }, sz: 10, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: LIGHTGREY } }, alignment: { horizontal: 'center' }, border: gridBorder }
+
+  for (let c = 0; c < cols; c++) S(`${colL(c)}1`, titleStyle)
+  for (let c = 0; c < cols; c++) S(`${colL(c)}2`, dateStyle)
+  for (let c = 0; c < cols; c++) S(`${colL(c)}3`, emptyStyle)
+  for (let c = 0; c < cols; c++) S(`${colL(c)}${headerRowIdx + 1}`, headerStyle)
+
+  for (let r = headerRowIdx + 2; r <= rows.length; r++) {
+    const row = rows[r - 1]
+    if (!row || row.length === 0) continue
+    const status = String(row[6] ?? '')
+    const statusColor = status === 'Nicht verfügbar' ? RED : status === 'Niedrig' ? YELLOW : GREEN
+    for (let c = 0; c < cols - 1; c++) {
+      S(`${colL(c)}${r}`, c >= 3 ? numStyle : cellStyle)
+    }
+    // Status-Spalte farbig
+    S(`${colL(6)}${r}`, {
+      font: { bold: true, color: { rgb: statusColor }, sz: 10, name: 'Arial' },
+      fill: { patternType: 'solid', fgColor: { rgb: LIGHTGREY } },
+      alignment: { horizontal: 'center' },
+      border: gridBorder,
+    })
+  }
+
+  ws['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: 6 } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: 6 } },
+  ]
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Lagerbestand')
+
+  const filename = `Lagerbestand_${today.replace(/\./g, '-')}.xlsx`
+  downloadWorkbook(wb, filename)
+}
+
+// ── Verbrauchsbericht-Export (Zeitraum, aggregiert) ──────────
+
+export interface VerbrauchRow {
+  produkt: string
+  kategorie: string | null
+  haendler: string | null
+  staerke_mm: string | null
+  masse_mm: string | null
+  ek_preis: number | null
+  vk_preis: number | null
+  total_menge: number
+}
+
+export function exportVerbrauchToExcel(rows: VerbrauchRow[], startDate: string, endDate: string): void {
+  const wb = XLSX.utils.book_new()
+  const ws: XLSX.WorkSheet = {}
+
+  // ── Farben ───────────────────────────────────────────────
+  const BLACK  = '000000'
+  const WHITE  = 'FFFFFF'
+  const G2     = '131313'   // Datenzeile (gerade)
+  const G3     = '1B1B1B'   // Datenzeile (ungerade)
+  const G4     = '181818'   // Kategorie-Header
+  const MUTED  = '777777'   // Dezenter Text
+  const MUTED2 = '444444'   // Noch dezenter
+  const BDR    = '2E2E2E'   // Zellen-Rahmen
+  const BDM    = '3C3C3C'   // Separator-Linie
+  const STATBG = '0A0A0A'   // Stat-Box Hintergrund
+
+  const NUM_COLS = 9
+  const colL = (i: number) => String.fromCharCode(65 + i)
+
+  const merges: XLSX.Range[] = []
+  const rowHeights: { hpt: number }[] = []
+
+  // Zeilenhoehe setzen (1-basiert)
+  const setRow = (r: number, hpt: number) => {
+    while (rowHeights.length < r) rowHeights.push({ hpt: 14 })
+    rowHeights[r - 1] = { hpt }
+  }
+
+  // Zelle setzen
+  const cell = (ref: string, v: string | number, t: 's' | 'n', s: object) => {
+    ws[ref] = { v, t, s }
+  }
+
+  // Leere Zelle mit Stil
+  const blank = (ref: string, s: object) => {
+    ws[ref] = { v: '', t: 's', s }
+  }
+
+  // Merge hinzufuegen (1-basiert, 0-basierte Spalten)
+  const mg = (r1: number, c1: number, r2: number, c2: number) => {
+    merges.push({ s: { r: r1 - 1, c: c1 }, e: { r: r2 - 1, c: c2 } })
+  }
+
+  // Ganze Zeile fuellen
+  const fillRow = (r: number, s: object) => {
+    for (let c = 0; c < NUM_COLS; c++) blank(`${colL(c)}${r}`, s)
+  }
+
+  // ── Formatierungshelfer ─────────────────────────────────────────
+  const fmtDate = (d: string) => {
+    const [y, m, day] = d.split('-')
+    return `${day}.${m}.${y}`
+  }
+
+  const fmtEur = (n: number): string => {
+    if (n === 0) return '–'
+    const [int, dec] = n.toFixed(2).split('.')
+    return `€ ${int.replace(/\B(?=(\d{3})+(?!\d))/g, '.')},${dec}`
+  }
+
+  const startFmt = fmtDate(startDate)
+  const endFmt   = fmtDate(endDate)
+  const today    = new Date()
+  const pad      = (n: number) => String(n).padStart(2, '0')
+  const todayFmt = `${pad(today.getDate())}.${pad(today.getMonth() + 1)}.${today.getFullYear()}`
+
+  // ── Statistiken ──────────────────────────────────────────────────────────
+  const totalMenge  = rows.reduce((s, r) => s + r.total_menge, 0)
+  const totalEK     = rows.reduce((s, r) => s + r.total_menge * (r.ek_preis ?? 0), 0)
+  const totalVK     = rows.reduce((s, r) => s + r.total_menge * (r.vk_preis ?? 0), 0)
+  const numArtikel  = rows.length
+
+  // ── Basis-Stile ────────────────────────────────────────────────────────────
+  const sBg = (rgb: string) => ({ fill: { patternType: 'solid', fgColor: { rgb } } })
+
+  const sBrand = {
+    font:      { bold: true, color: { rgb: WHITE }, sz: 24, name: 'Arial' },
+    fill:      { patternType: 'solid', fgColor: { rgb: BLACK } },
+    alignment: { horizontal: 'left', vertical: 'center' },
+  }
+  const sSubtitle = {
+    font:      { color: { rgb: MUTED }, sz: 10, name: 'Arial', italic: true },
+    fill:      { patternType: 'solid', fgColor: { rgb: BLACK } },
+    alignment: { horizontal: 'left', vertical: 'center' },
+  }
+  const sExportDate = {
+    font:      { color: { rgb: MUTED2 }, sz: 8, name: 'Arial' },
+    fill:      { patternType: 'solid', fgColor: { rgb: BLACK } },
+    alignment: { horizontal: 'left', vertical: 'center' },
+  }
+  const sSep = {
+    fill: { patternType: 'solid', fgColor: { rgb: BDM } },
+  }
+
+  // Stat-Box: Beschriftung oben
+  const sStatLabel = {
+    font:      { bold: true, color: { rgb: MUTED }, sz: 7, name: 'Arial' },
+    fill:      { patternType: 'solid', fgColor: { rgb: STATBG } },
+    alignment: { horizontal: 'center', vertical: 'bottom' },
+    border: {
+      top:   { style: 'thin', color: { rgb: BDR } },
+      left:  { style: 'thin', color: { rgb: BDR } },
+      right: { style: 'thin', color: { rgb: BDR } },
+    },
+  }
+
+  // Stat-Box: Wert unten
+  const sStatValue = {
+    font:      { bold: true, color: { rgb: WHITE }, sz: 16, name: 'Arial' },
+    fill:      { patternType: 'solid', fgColor: { rgb: STATBG } },
+    alignment: { horizontal: 'center', vertical: 'center' },
+    border: {
+      bottom: { style: 'thin', color: { rgb: BDR } },
+      left:   { style: 'thin', color: { rgb: BDR } },
+      right:  { style: 'thin', color: { rgb: BDR } },
+    },
+  }
+
+  // Tabellen-Header
+  const sThBase = {
+    font:      { bold: true, color: { rgb: MUTED }, sz: 8, name: 'Arial' },
+    fill:      { patternType: 'solid', fgColor: { rgb: G4 } },
+    border:    { bottom: { style: 'medium', color: { rgb: BDM } } },
+  }
+  const sTh  = { ...sThBase, alignment: { horizontal: 'center', vertical: 'center' } }
+  const sThL = { ...sThBase, alignment: { horizontal: 'left',   vertical: 'center' } }
+  const sThR = { ...sThBase, alignment: { horizontal: 'right',  vertical: 'center' } }
+
+  // Kategorie-Header
+  const sCatHdr = {
+    font:      { bold: true, color: { rgb: MUTED }, sz: 8, name: 'Arial' },
+    fill:      { patternType: 'solid', fgColor: { rgb: G4 } },
+    alignment: { horizontal: 'left', vertical: 'center' },
+  }
+
+  // Datenzellen
+  const sDL = (fg: string) => ({
+    font:      { color: { rgb: WHITE }, sz: 9, name: 'Arial' },
+    fill:      { patternType: 'solid', fgColor: { rgb: fg } },
+    alignment: { horizontal: 'left', vertical: 'center' },
+    border:    { bottom: { style: 'thin', color: { rgb: BDR } } },
+  })
+  const sDC = (fg: string) => ({
+    font:      { color: { rgb: WHITE }, sz: 9, name: 'Arial' },
+    fill:      { patternType: 'solid', fgColor: { rgb: fg } },
+    alignment: { horizontal: 'center', vertical: 'center' },
+    border:    { bottom: { style: 'thin', color: { rgb: BDR } } },
+  })
+  const sDR = (fg: string) => ({
+    font:      { color: { rgb: WHITE }, sz: 9, name: 'Arial' },
+    fill:      { patternType: 'solid', fgColor: { rgb: fg } },
+    alignment: { horizontal: 'right', vertical: 'center' },
+    border:    { bottom: { style: 'thin', color: { rgb: BDR } } },
+  })
+  const sDM = (fg: string) => ({
+    font:      { color: { rgb: MUTED2 }, sz: 9, name: 'Arial' },
+    fill:      { patternType: 'solid', fgColor: { rgb: fg } },
+    alignment: { horizontal: 'left', vertical: 'center' },
+    border:    { bottom: { style: 'thin', color: { rgb: BDR } } },
+  })
+
+  // Gesamt-Zeile
+  const sTotLabel = {
+    font:      { bold: true, color: { rgb: WHITE }, sz: 10, name: 'Arial' },
+    fill:      { patternType: 'solid', fgColor: { rgb: BLACK } },
+    alignment: { horizontal: 'right', vertical: 'center' },
+    border: {
+      top:    { style: 'medium', color: { rgb: BDM } },
+      bottom: { style: 'thin',   color: { rgb: BDR } },
+    },
+  }
+  const sTotNum = {
+    font:      { bold: true, color: { rgb: WHITE }, sz: 10, name: 'Arial' },
+    fill:      { patternType: 'solid', fgColor: { rgb: BLACK } },
+    alignment: { horizontal: 'right', vertical: 'center' },
+    border: {
+      top:    { style: 'medium', color: { rgb: BDM } },
+      bottom: { style: 'thin',   color: { rgb: BDR } },
+    },
+  }
+
+  const sFooter = {
+    font:      { color: { rgb: MUTED2 }, sz: 8, name: 'Arial', italic: true },
+    fill:      { patternType: 'solid', fgColor: { rgb: BLACK } },
+    alignment: { horizontal: 'left', vertical: 'center' },
+  }
+
+  // ── Aufbau ──────────────────────────────────────────────────────────────────
+  let R = 1
+
+  // R1 — Brand-Header
+  setRow(R, 44)
+  cell(`A${R}`, 'AUFGEMÖBELT', 's', sBrand)
+  for (let c = 1; c < NUM_COLS; c++) blank(`${colL(c)}${R}`, sBg(BLACK))
+  mg(R, 0, R, 8)
+  R++
+
+  // R2 — Untertitel
+  setRow(R, 20)
+  cell(`A${R}`, `Verbrauchsbericht  ·  ${startFmt} – ${endFmt}`, 's', sSubtitle)
+  for (let c = 1; c < NUM_COLS; c++) blank(`${colL(c)}${R}`, sBg(BLACK))
+  mg(R, 0, R, 8)
+  R++
+
+  // R3 — Export-Datum
+  setRow(R, 14)
+  cell(`A${R}`, `Exportiert am ${todayFmt}`, 's', sExportDate)
+  for (let c = 1; c < NUM_COLS; c++) blank(`${colL(c)}${R}`, sBg(BLACK))
+  mg(R, 0, R, 8)
+  R++
+
+  // R4 — Trennlinie
+  setRow(R, 4)
+  fillRow(R, sSep)
+  R++
+
+  // R5 — Stat-Beschriftungen  [A–B] ARTIKEL | [C–D] GESAMTMENGE | [E] Lücke | [F–G] EK GESAMT | [H–I] VK GESAMT
+  setRow(R, 13)
+  cell(`A${R}`, 'ARTIKEL',     's', sStatLabel); blank(`B${R}`, sStatLabel); mg(R, 0, R, 1)
+  cell(`C${R}`, 'GESAMTMENGE', 's', sStatLabel); blank(`D${R}`, sStatLabel); mg(R, 2, R, 3)
+  blank(`E${R}`, sBg(BLACK))
+  cell(`F${R}`, 'EK GESAMT',   's', sStatLabel); blank(`G${R}`, sStatLabel); mg(R, 5, R, 6)
+  cell(`H${R}`, 'VK GESAMT',   's', sStatLabel); blank(`I${R}`, sStatLabel); mg(R, 7, R, 8)
+  R++
+
+  // R6 — Stat-Werte
+  setRow(R, 30)
+  cell(`A${R}`, String(numArtikel),  's', sStatValue); blank(`B${R}`, sStatValue); mg(R, 0, R, 1)
+  cell(`C${R}`, String(totalMenge),  's', sStatValue); blank(`D${R}`, sStatValue); mg(R, 2, R, 3)
+  blank(`E${R}`, sBg(BLACK))
+  cell(`F${R}`, fmtEur(totalEK),    's', sStatValue); blank(`G${R}`, sStatValue); mg(R, 5, R, 6)
+  cell(`H${R}`, fmtEur(totalVK),    's', sStatValue); blank(`I${R}`, sStatValue); mg(R, 7, R, 8)
+  R++
+
+  // R7 — Abstand
+  setRow(R, 10)
+  fillRow(R, sBg(BLACK))
+  R++
+
+  // R8 — Tabellen-Header
+  setRow(R, 22)
+  const HEADERS  = ['WARE', 'KATEGORIE', 'HÄNDLER', 'STÄRKE', 'MASSE', 'MENGE', 'EK / STK', 'VK / STK', 'GESAMT VK']
+  const H_STYLES = [sThL, sThL, sThL, sTh, sTh, sTh, sThR, sThR, sThR]
+  for (let c = 0; c < NUM_COLS; c++) cell(`${colL(c)}${R}`, HEADERS[c], 's', H_STYLES[c])
+  R++
+
+  // R9+ — Datenzeilen nach Kategorie gruppiert
+  const grouped = new Map<string, VerbrauchRow[]>()
+  for (const row of rows) {
+    const kat = row.kategorie ?? 'Sonstige'
+    if (!grouped.has(kat)) grouped.set(kat, [])
+    grouped.get(kat)!.push(row)
+  }
+  const sortedCats = [...grouped.keys()].sort()
+
+  let rowIdx = 0
+  for (const kat of sortedCats) {
+    const catRows = grouped.get(kat)!
+
+    // Kategorie-Header
+    setRow(R, 16)
+    cell(`A${R}`, kat.toUpperCase(), 's', sCatHdr)
+    for (let c = 1; c < NUM_COLS; c++) blank(`${colL(c)}${R}`, sCatHdr)
+    mg(R, 0, R, 8)
+    R++
+
+    for (const row of catRows) {
+      setRow(R, 18)
+      const fg = rowIdx % 2 === 0 ? G2 : G3
+
+      cell(`A${R}`, row.produkt,         's', sDL(fg))
+      cell(`B${R}`, row.kategorie ?? '', 's', sDM(fg))
+      cell(`C${R}`, row.haendler ?? '',  's', sDM(fg))
+      cell(`D${R}`, row.staerke_mm ?? '','s', sDC(fg))
+      cell(`E${R}`, row.masse_mm ?? '',  's', sDC(fg))
+      cell(`F${R}`, row.total_menge,     'n', sDR(fg))
+
+      if (row.ek_preis != null) {
+        cell(`G${R}`, row.ek_preis, 'n', sDR(fg))
+      } else {
+        blank(`G${R}`, sDR(fg))
+      }
+      if (row.vk_preis != null) {
+        cell(`H${R}`, row.vk_preis, 'n', sDR(fg))
+        cell(`I${R}`, +(row.total_menge * row.vk_preis).toFixed(2), 'n', sDR(fg))
+      } else {
+        blank(`H${R}`, sDR(fg))
+        blank(`I${R}`, sDR(fg))
+      }
+
+      rowIdx++
+      R++
+    }
+  }
+
+  // Trennlinie vor GESAMT
+  setRow(R, 4)
+  fillRow(R, sSep)
+  R++
+
+  // GESAMT-Zeile
+  setRow(R, 22)
+  cell(`A${R}`, 'GESAMT', 's', sTotLabel)
+  for (let c = 1; c <= 4; c++) blank(`${colL(c)}${R}`, sTotLabel)
+  mg(R, 0, R, 4)
+  cell(`F${R}`, totalMenge,       'n', sTotNum)
+  cell(`G${R}`, fmtEur(totalEK), 's', sTotNum)
+  blank(`H${R}`, sTotNum)
+  cell(`I${R}`, fmtEur(totalVK), 's', sTotNum)
+  R++
+
+  // Abstand
+  setRow(R, 8)
+  fillRow(R, sBg(BLACK))
+  R++
+
+  // Footer
+  setRow(R, 14)
+  cell(`A${R}`, 'Erstellt mit aufgemoebelt · Lager-App', 's', sFooter)
+  for (let c = 1; c < NUM_COLS; c++) blank(`${colL(c)}${R}`, sBg(BLACK))
+  mg(R, 0, R, 8)
+
+  // ── Sheet-Metadaten ───────────────────────────────────────────────────
+  ws['!ref']    = `A1:${colL(NUM_COLS - 1)}${R}`
+  ws['!merges'] = merges
+  ws['!rows']   = rowHeights
+  ws['!cols']   = [
+    { wch: 36 }, { wch: 18 }, { wch: 16 }, { wch: 10 }, { wch: 14 },
+    { wch: 8  }, { wch: 13 }, { wch: 13 }, { wch: 14 },
+  ]
+
+  XLSX.utils.book_append_sheet(wb, ws, 'Verbrauch')
+  const filename = `Verbrauch_${startFmt.replace(/\./g, '-')}_bis_${endFmt.replace(/\./g, '-')}.xlsx`
+  downloadWorkbook(wb, filename)
 }
 
 // ── Direkter Browser-Download ────────────────────────────────

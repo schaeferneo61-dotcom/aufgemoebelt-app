@@ -6,11 +6,10 @@ import { LoginPage } from './pages/LoginPage'
 import { ProjectsPage } from './pages/ProjectsPage'
 import { ProjectDetailPage } from './pages/ProjectDetailPage'
 import { AdminPage } from './pages/AdminPage'
-import { ArbeitszeitPage } from './pages/ArbeitszeitPage'
+import { DispoPage } from './pages/DispoPage'
 import { NameSetupOverlay } from './components/NameSetupOverlay'
 import { processQueue, getQueueCount } from './lib/offlineQueue'
 
-// Zeigt das Overlay wenn der eingeloggte Benutzer noch keinen Namen hat
 function NameGuard() {
   const { user, profile, loading } = useAuth()
   if (loading || !user || !profile) return null
@@ -62,13 +61,15 @@ export default function App() {
             }
           />
           <Route
-            path="/arbeitszeit"
+            path="/dispo"
             element={
               <ProtectedRoute>
-                <ArbeitszeitPage />
+                <DispoPage />
               </ProtectedRoute>
             }
           />
+          {/* Alte Route weiterleiten */}
+          <Route path="/arbeitszeit" element={<Navigate to="/dispo" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

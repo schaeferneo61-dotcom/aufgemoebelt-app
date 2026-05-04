@@ -18,7 +18,6 @@ export function Header() {
   useEffect(() => {
     const handleOnline = () => setIsOnline(true)
     const handleOffline = () => setIsOnline(false)
-    // Bug 4 Fix: sofort nach processQueue (App.tsx) aktualisieren
     const handleQueueUpdated = () => setPendingCount(getQueueCount())
     const handleFocus = () => setPendingCount(getQueueCount())
     window.addEventListener('online', handleOnline)
@@ -45,7 +44,6 @@ export function Header() {
       className="fixed top-0 left-0 right-0 z-50 bg-black border-b border-border"
       style={{ paddingTop: 'env(safe-area-inset-top)' }}
     >
-      {/* h-14 = 56px — alle drei Elemente absolut positioniert */}
       <div className="relative h-14">
 
         {/* Logo – absolut links */}
@@ -55,28 +53,19 @@ export function Header() {
           </Link>
         </div>
 
-        {/* Rolle – absolut mittig auf der gesamten Header-Breite */}
+        {/* Rolle – mittig */}
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           {rolleDisplay && (
-            isAdminOrProjektleiter ? (
-              <Link
-                to="/admin"
-                className="pointer-events-auto font-raleway font-semibold text-white text-[11px] tracking-[0.2em] uppercase hover:opacity-70 transition-opacity"
-              >
-                {rolleDisplay}
-              </Link>
-            ) : (
-              <Link
-                to="/arbeitszeit"
-                className="pointer-events-auto font-raleway font-semibold text-white text-[11px] tracking-[0.2em] uppercase hover:opacity-70 transition-opacity"
-              >
-                {rolleDisplay}
-              </Link>
-            )
+            <Link
+              to={isAdminOrProjektleiter ? '/admin' : '/dispo'}
+              className="pointer-events-auto font-raleway font-semibold text-white text-[11px] tracking-[0.2em] uppercase hover:opacity-70 transition-opacity"
+            >
+              {rolleDisplay}
+            </Link>
           )}
         </div>
 
-        {/* Offline-Indikator – mittig zwischen Logo (links) und Rolle (Mitte) */}
+        {/* Offline-Indikator */}
         {(!isOnline || pendingCount > 0) && (
           <div className="absolute top-0 bottom-0 flex items-center justify-center pointer-events-none" style={{ left: '56px', right: '50%' }}>
             <span className="font-raleway text-[9px] tracking-widest uppercase text-yellow-400 border border-yellow-400/40 px-2 py-1 whitespace-nowrap">

@@ -42,7 +42,7 @@ export function AdminPage() {
         <div className="space-y-12">
           <ProductImport />
           <VerbrauchsExport />
-          <ArbeitszeitLink />
+          <DispoLink />
           {isAdmin && <ProSonataSync />}
           {isAdmin && <UserManagement />}
         </div>
@@ -51,28 +51,45 @@ export function AdminPage() {
   )
 }
 
-// ── Arbeitszeit-Link ─────────────────────────────────────────
+// ── Dispo-Link ───────────────────────────────────────────────
 
-function ArbeitszeitLink() {
+function DispoLink() {
   return (
     <section>
       <h2 className="font-raleway font-semibold text-white uppercase tracking-widest text-sm mb-1">
-        Arbeitszeit
+        Dispo
       </h2>
       <p className="text-muted font-opensans text-xs mb-6">
-        Wochenübersicht aller Mitarbeiter aus ProSonata · Beta
+        Mitarbeiter manuell zu Projekten zuteilen und Wochenübersicht verwalten
       </p>
-      <div className="border border-border p-6 flex flex-col sm:flex-row items-start sm:items-center gap-4">
-        <Link
-          to="/arbeitszeit"
-          className="bg-white text-black px-6 py-3 font-raleway text-xs uppercase tracking-widest hover:bg-muted transition-colors whitespace-nowrap"
-        >
-          Arbeitszeit öffnen →
-        </Link>
-        <p className="text-muted font-opensans text-xs">
-          Matrix aller Mitarbeiter mit Farb-Kodierung: extern / intern / kein Projekt.
-        </p>
-      </div>
+      <Link
+        to="/dispo"
+        className="group inline-flex items-center gap-4 border border-border px-6 py-5 hover:border-white hover:bg-white transition-colors w-full sm:w-auto"
+      >
+        {/* Uhr-Icon */}
+        <span className="flex items-center justify-center w-10 h-10 border border-border group-hover:border-black transition-colors shrink-0">
+          <svg
+            className="w-5 h-5 text-white group-hover:text-black transition-colors"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.5}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <circle cx="12" cy="12" r="10" />
+            <polyline points="12 6 12 12 16 14" />
+          </svg>
+        </span>
+        <div className="text-left">
+          <p className="font-raleway font-semibold text-white group-hover:text-black text-sm uppercase tracking-widest transition-colors">
+            Dispo öffnen
+          </p>
+          <p className="font-opensans text-xs text-muted group-hover:text-black/70 mt-0.5 transition-colors">
+            Matrix · Zuteilung · Wochenplanung
+          </p>
+        </div>
+      </Link>
     </section>
   )
 }

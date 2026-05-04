@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from 'react'
 import { Modal } from './Modal'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { logLagerBewegung } from '../lib/lager'
+import { addToQueue } from '../lib/offlineQueue'
 import type { Product } from '../types'
 
 const KATEGORIEN_REIHENFOLGE = [
@@ -17,6 +19,12 @@ const KATEGORIEN_REIHENFOLGE = [
 let _productsCache: Product[] = []
 let _cacheTimestamp = 0
 const CACHE_TTL = 3 * 60 * 1000 // 3 Minuten
+
+// Nach einem Excel-Import aufrufen damit das Modal sofort die neuen Produkte zeigt
+export function clearProductsCache() {
+  _productsCache = []
+  _cacheTimestamp = 0
+}
 
 // Fuzzy-Suche: Groß-/Kleinschreibung egal, Umlaute egal, kleine Tippfehler tolerant
 function fuzzyMatch(text: string, query: string): boolean {
@@ -41,14 +49,15 @@ interface Props {
   open: boolean
   onClose: () => void
   projectId: string
+  projectName: string
   onAdded: () => void
   existingProductIds?: string[]
 }
 
 type View = 'suche' | 'kategorien' | 'produkte'
 
-export function AddProductModal({ open, onClose, projectId, onAdded, existingProductIds = [] }: Props) {
-  const { user } = useAuth()
+export function AddProductModal({ open, onClose, projectId, projectName, onAdded, existingProductIds: _existingProductIds = [] }: Props) {
+  const { user, profile } = useAuth()
   const [products, setProducts] = useState<Product[]>(_productsCache)
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<Product | null>(null)
@@ -61,6 +70,7 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
   const [selectedKategorie, setSelectedKategorie] = useState<string | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
+  // Produkte laden
   useEffect(() => {
     if (open) {
       loadProducts()
@@ -79,15 +89,17 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
 
   async function loadProducts() {
     const now = Date.now()
-    // Cache verwenden wenn nicht abgelaufen
     if (_productsCache.length > 0 && now - _cacheTimestamp < CACHE_TTL) {
       setProducts(_productsCache)
       return
     }
     setLoading(true)
-    const { data } = await supabase.from('products').select('*').order('produkt')
-    _productsCache = (data as Product[]) ?? []
-    _cacheTimestamp = Date.now()
+    const { data, error } = await supabase.from('products').select('*').order('produkt')
+    if (!error && data) {
+      _productsCache = data as Product[]
+      _cacheTimestamp = Date.now()
+    }
+    // Bei Fehler: Cache verwenden (ggf. leer) – kein Absturz
     setProducts(_productsCache)
     setLoading(false)
   }
@@ -107,7 +119,10 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
   )
 
   const kategorien = [
-    ...KATEGORIEN_REIHENFOLGE,
+    // Vordefinierte Kategorien nur zeigen wenn mind. 1 Produkt vorhanden
+    ...KATEGORIEN_REIHENFOLGE.filter((kat) =>
+      products.some((p) => (p.kategorie ?? 'Sonstige') === kat)
+    ),
     ...kategorienAusDB.filter((k) => !KATEGORIEN_REIHENFOLGE.includes(k)).sort(),
     ...(products.some((p) => !p.kategorie) ? ['Sonstige'] : []),
   ]
@@ -129,10 +144,34 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
       setError('Menge muss eine positive Zahl sein.')
       return
     }
+
     setSaving(true)
     setError(null)
 
-    const { error } = await supabase.from('project_items').insert({
+    // OFFLINE: Buchung in lokale Warteschlange – wird synchronisiert wenn wieder online
+    if (!navigator.onLine) {
+      addToQueue({
+        id: crypto.randomUUID(),
+        projectId,
+        projectName,
+        productId: selected.id,
+        productName: selected.produkt,
+        productKategorie: selected.kategorie ?? null,
+        product: selected,
+        menge: mengeNum,
+        notiz: notiz.trim() || null,
+        userId: user?.id ?? null,
+        userName: profile?.name ?? null,
+        createdAt: new Date().toISOString(),
+      })
+      setSaving(false)
+      onAdded()
+      onClose()
+      return
+    }
+
+    // ONLINE: Normal einfügen
+    const { error: insertError } = await supabase.from('project_items').insert({
       project_id: projectId,
       product_id: selected.id,
       product_name: selected.produkt,
@@ -142,9 +181,19 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
       hinzugefuegt_von: user?.id ?? null,
     })
 
-    if (error) {
-      setError(error.message)
+    if (insertError) {
+      setError(insertError.message)
     } else {
+      await logLagerBewegung({
+        product_id: selected.id,
+        product_name: selected.produkt,
+        project_id: projectId,
+        project_name: projectName,
+        aktion: 'ausgebucht',
+        menge_delta: -mengeNum,
+        user_id: user?.id ?? null,
+        user_name: profile?.name ?? null,
+      })
       onAdded()
       onClose()
     }
@@ -229,9 +278,7 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
                 </div>
               ) : (
                 kategorien.map((kat) => {
-                  const anzahl = products.filter(
-                    (p) => (p.kategorie ?? 'Sonstige') === kat
-                  ).length
+                  const alleInKat = products.filter((p) => (p.kategorie ?? 'Sonstige') === kat)
                   return (
                     <button
                       key={kat}
@@ -242,7 +289,7 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
                         {kat}
                       </span>
                       <span className="text-xs text-muted group-hover:text-black/60 font-opensans">
-                        {anzahl} Ware{anzahl !== 1 ? 'n' : ''}
+                        {alleInKat.length} Ware{alleInKat.length !== 1 ? 'n' : ''}
                       </span>
                     </button>
                   )
@@ -357,7 +404,8 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
           <button
             type="button"
             onClick={onClose}
-            className="flex-1 border border-border text-white py-3 font-raleway text-xs uppercase tracking-widest hover:bg-white hover:text-black transition-colors"
+            disabled={saving}
+            className="flex-1 border border-border text-white py-3 font-raleway text-xs uppercase tracking-widest hover:bg-white hover:text-black transition-colors disabled:opacity-40"
           >
             Abbrechen
           </button>
@@ -374,34 +422,32 @@ export function AddProductModal({ open, onClose, projectId, onAdded, existingPro
   )
 }
 
-function ProductRow({ product: p, onSelect }: { product: Product; onSelect: (p: Product) => void }) {
+interface ProductRowProps {
+  product: Product
+  onSelect: (p: Product) => void
+}
+
+function ProductRow({ product: p, onSelect }: ProductRowProps) {
   return (
     <button
       onClick={() => onSelect(p)}
-      className="w-full text-left px-4 py-3 border-b border-border last:border-b-0 hover:bg-white hover:text-black transition-colors group"
+      className="w-full text-left px-4 py-3 border-b border-border last:border-b-0 transition-colors group hover:bg-white hover:text-black cursor-pointer"
     >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <p className="font-opensans text-sm text-white group-hover:text-black font-medium truncate">
+          <p className="font-opensans text-sm font-medium truncate text-white group-hover:text-black">
             {p.produkt}
           </p>
-          <p className="text-xs text-muted group-hover:text-black/60 font-opensans mt-0.5">
+          <p className="text-xs font-opensans mt-0.5 text-muted group-hover:text-black/60">
             {[p.staerke_mm && `${p.staerke_mm} mm`, p.masse_mm, p.haendler]
               .filter(Boolean).join(' · ')}
           </p>
         </div>
-        <div className="text-right shrink-0">
-          {p.vk_preis !== null && (
-            <p className="text-sm font-opensans text-white group-hover:text-black">
-              € {p.vk_preis.toFixed(2)}
-            </p>
-          )}
-          {p.bestand > 0 && (
-            <p className="text-xs text-muted group-hover:text-black/60 font-opensans">
-              Bestand: {p.bestand}
-            </p>
-          )}
-        </div>
+        {p.vk_preis !== null && (
+          <p className="text-sm font-opensans text-white group-hover:text-black shrink-0">
+            € {p.vk_preis.toFixed(2)}
+          </p>
+        )}
       </div>
     </button>
   )

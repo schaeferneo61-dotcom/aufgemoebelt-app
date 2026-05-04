@@ -10,8 +10,22 @@ export interface Product {
   vk_preis: number | null
   stk_palette: string | null
   bestand: number
+  verfuegbar: number
   created_at: string
   updated_at: string
+}
+
+export interface LagerBewegung {
+  id: string
+  product_id: string | null
+  product_name: string
+  project_id: string | null
+  project_name: string | null
+  aktion: 'ausgebucht' | 'eingebucht' | 'menge_geaendert' | 'excel_import'
+  menge_delta: number
+  user_id: string | null
+  user_name: string | null
+  created_at: string
 }
 
 export interface Project {
