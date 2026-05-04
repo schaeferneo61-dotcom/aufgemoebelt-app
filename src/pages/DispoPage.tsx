@@ -169,9 +169,9 @@ function DispoPasswordGate({ onUnlock }: { onUnlock: () => void }) {
 export function DispoPage() {
   const [unlocked, setUnlocked] = useState(() => sessionStorage.getItem(DISPO_KEY) === '1')
   const { isAdminOrProjektleiter, profile } = useAuth()
+  const [weekStart, setWeekStart] = useState(() => getWeekStart(new Date()))
 
   if (!unlocked) return <DispoPasswordGate onUnlock={() => setUnlocked(true)} />
-  const [weekStart, setWeekStart] = useState(() => getWeekStart(new Date()))
 
   const days = useMemo(() => getWeekDays(weekStart), [weekStart])
   const holidays = useMemo(() => {
