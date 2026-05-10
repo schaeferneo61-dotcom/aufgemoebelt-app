@@ -15,10 +15,13 @@ interface ProSonataProject {
 // ── Hilfsfunktionen ────────────────────────────────────────────
 function mapStatus(p: ProSonataProject): 'aktiv' | 'pausiert' | 'abgeschlossen' {
   if (p.projectDateEnd) {
-    const yesterday = new Date()
-    yesterday.setDate(yesterday.getDate() - 1)
-    yesterday.setHours(23, 59, 59, 999)
-    if (new Date(p.projectDateEnd) <= yesterday) return 'abgeschlossen'
+    const end = new Date(p.projectDateEnd)
+    if (!isNaN(end.getTime())) {
+      const yesterday = new Date()
+      yesterday.setDate(yesterday.getDate() - 1)
+      yesterday.setHours(23, 59, 59, 999)
+      if (end <= yesterday) return 'abgeschlossen'
+    }
   }
   if (p.projectStatus === 2 || p.projectStatus === 3) return 'abgeschlossen'
   if (p.activeStatus === 0) return 'pausiert'
@@ -98,12 +101,24 @@ export default async function handler(req: any, res: any) {
   const supabase = createClient(supabaseUrl, supabaseKey)
 
   try {
-    // Beide Fetches parallel – halbiert die Netzwerkzeit
+    // Beide Fetches parallel – halbiert die Netzwerkzeit.
+    // allSettled statt all: wenn ein Fetch fehlschlägt werden die anderen nicht verworfen.
     console.log('[Sync] Lade Projekte von ProSonata (parallel)…')
-    const [active, inactive] = await Promise.all([
+    const [activeResult, inactiveResult] = await Promise.allSettled([
       fetchAllPages(apiKey, appID),
       fetchAllPages(apiKey, appID, '&projectStatus=0'),
     ])
+    const active = activeResult.status === 'fulfilled' ? activeResult.value : []
+    const inactive = inactiveResult.status === 'fulfilled' ? inactiveResult.value : []
+    if (activeResult.status === 'rejected')
+      console.error('[Sync] Aktive-Fetch fehlgeschlagen:', activeResult.reason)
+    if (inactiveResult.status === 'rejected')
+      console.error('[Sync] Inactive-Fetch fehlgeschlagen:', inactiveResult.reason)
+    // Beide Fetches gescheitert → Fehler zurückwerfen damit der Workflow retried
+    if (active.length === 0 && inactive.length === 0 &&
+        activeResult.status === 'rejected' && inactiveResult.status === 'rejected') {
+      throw new Error('Beide ProSonata-Fetches fehlgeschlagen: ' + (activeResult as PromiseRejectedResult).reason)
+    }
     console.log(`[Sync] ${active.length} aktive + ${inactive.length} weitere Projekte geladen`)
 
     // Deduplizieren anhand projectID
