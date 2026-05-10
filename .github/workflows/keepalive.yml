@@ -1,0 +1,20 @@
+name: Keep Sync alive
+
+on:
+  schedule:
+    # Jeden Montag 08:00 UTC – verhindert dass GitHub den Sync nach 60 Tagen pausiert
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Sync-Workflow reaktivieren (falls GitHub ihn pausiert hat)
+        run: |
+          gh workflow enable sync-prosonata.yml || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}

@@ -98,15 +98,13 @@ export default async function handler(req: any, res: any) {
   const supabase = createClient(supabaseUrl, supabaseKey)
 
   try {
-    // Aktive und inaktive Projekte nacheinander laden (nicht parallel) damit
-    // der Gesamt-Timeout nicht schon nach dem ersten Fetch aufgebraucht ist
-    console.log('[Sync] Lade aktive Projekte…')
-    const active = await fetchAllPages(apiKey, appID)
-    console.log(`[Sync] ${active.length} aktive Projekte`)
-
-    console.log('[Sync] Lade weitere Projekte (projectStatus=0)…')
-    const inactive = await fetchAllPages(apiKey, appID, '&projectStatus=0')
-    console.log(`[Sync] ${inactive.length} weitere Projekte`)
+    // Beide Fetches parallel – halbiert die Netzwerkzeit
+    console.log('[Sync] Lade Projekte von ProSonata (parallel)…')
+    const [active, inactive] = await Promise.all([
+      fetchAllPages(apiKey, appID),
+      fetchAllPages(apiKey, appID, '&projectStatus=0'),
+    ])
+    console.log(`[Sync] ${active.length} aktive + ${inactive.length} weitere Projekte geladen`)
 
     // Deduplizieren anhand projectID
     const seen = new Set<string>()
