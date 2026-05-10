@@ -43,7 +43,7 @@ interface DispoEintrag {
   is_internal: boolean; datum_von: string; datum_bis: string; notiz: string | null
   created_by: string | null; created_at: string
 }
-interface PersonProfile { id: string; name: string | null; rolle: string | null; email: string | null }
+interface PersonProfile { id: string; name: string | null; rolle: string | null }
 interface Projekt { id: string; name: string; typ: 'intern' | 'extern' | null; status: string; created_at: string }
 
 const STRIPE = 'repeating-linear-gradient(-45deg,#fff,#fff 3px,#000 3px,#000 6px)'
@@ -258,7 +258,7 @@ function DispoMatrix({ days }: { days: Date[] }) {
   async function loadAll() {
     setLoading(true)
     const [pRes, prRes] = await Promise.all([
-      supabase.from('profiles').select('id, name, rolle, email').order('name'),
+      supabase.from('profiles').select('id, name, rolle').order('name'),
       supabase.from('projects').select('id, name, typ, status, created_at').eq('status', 'aktiv').order('name'),
     ])
     setPersons((pRes.data as PersonProfile[]) ?? [])
@@ -438,6 +438,24 @@ function DispoMatrix({ days }: { days: Date[] }) {
   )
 }
 
+
+// ── Fuzzy-Suche Helpers ───────────────────────────────────────────────────────
+
+function fuzzyMatch(text: string, q: string): boolean {
+  if (!q) return true
+  const t = text.toLowerCase(); const qLow = q.toLowerCase()
+  if (t.includes(qLow)) return true
+  let qi = 0
+  for (let i = 0; i < t.length && qi < qLow.length; i++) { if (t[i] === qLow[qi]) qi++ }
+  return qi === qLow.length
+}
+function fuzzyScore(text: string, q: string): number {
+  const t = text.toLowerCase(); const qLow = q.toLowerCase()
+  if (t.startsWith(qLow)) return 3
+  if (t.includes(qLow)) return 2
+  return 1
+}
+
 // ── Neue Zuteilung Modal ──────────────────────────────────────────────────────
 
 function NeuZuteilungModal({ persons, projekte, defaultFrom, defaultTo, createdBy, onClose, onSaved }: {
@@ -458,22 +476,6 @@ function NeuZuteilungModal({ persons, projekte, defaultFrom, defaultTo, createdB
   const [mounted, setMounted] = useState(false)
   useEffect(() => { const id = requestAnimationFrame(() => setMounted(true)); return () => cancelAnimationFrame(id) }, [])
 
-
-  // Fuzzy-Suche: Zeichen müssen in Reihenfolge vorkommen (Tippfehler-tolerant)
-  function fuzzyMatch(text: string, q: string): boolean {
-    if (!q) return true
-    const t = text.toLowerCase(); const qLow = q.toLowerCase()
-    if (t.includes(qLow)) return true
-    let qi = 0
-    for (let i = 0; i < t.length && qi < qLow.length; i++) { if (t[i] === qLow[qi]) qi++ }
-    return qi === qLow.length
-  }
-  function fuzzyScore(text: string, q: string): number {
-    const t = text.toLowerCase(); const qLow = q.toLowerCase()
-    if (t.startsWith(qLow)) return 3
-    if (t.includes(qLow)) return 2
-    return 1
-  }
 
   const filteredPersons = useMemo(
     () => persons
@@ -671,7 +673,11 @@ function NeuZuteilungModal({ persons, projekte, defaultFrom, defaultTo, createdB
               })}
               {sortedProjekte.length === 0 && (
                 <div className="px-4 py-3">
-                  <span className="font-opensans text-xs text-muted">Keine Projekte gefunden.</span>
+                  <span className="font-opensans text-xs text-muted">
+                    {typFilter !== 'all'
+                      ? `Keine ${typFilter === 'intern' ? 'internen' : 'externen'} Projekte gefunden.`
+                      : 'Keine Projekte gefunden.'}
+                  </span>
                 </div>
               )}
             </div>
