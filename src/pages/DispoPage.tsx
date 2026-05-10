@@ -22,6 +22,8 @@ function parseLocalDate(s: string): Date {
   const [y, m, d] = s.split('-').map(Number)
   return new Date(y, m - 1, d)
 }
+function nextDay(s: string): string { const d = parseLocalDate(s); d.setDate(d.getDate() + 1); return fmtDate(d) }
+function prevDay(s: string): string { const d = parseLocalDate(s); d.setDate(d.getDate() - 1); return fmtDate(d) }
 
 function getWeekStart(date: Date): Date {
   const d = new Date(date)
@@ -225,6 +227,7 @@ function DispoMatrix({ days }: { days: Date[] }) {
   const [showNeu, setShowNeu] = useState(false)
   const [selectedEntry, setSelectedEntry] = useState<DispoEintrag | null>(null)
   const [selectedPersonName, setSelectedPersonName] = useState<string | null>(null)
+  const [tapDate, setTapDate] = useState('')
   const [refreshKey, setRefreshKey] = useState(0)
   const didMountRef = useRef(false)
 
@@ -296,6 +299,31 @@ function DispoMatrix({ days }: { days: Date[] }) {
     if (error) throw new Error(error.message)
     setRefreshKey(k => k + 1)
     setSelectedEntry(null)
+  }
+
+  async function deleteSingleDay(entry: DispoEintrag, day: string) {
+    if (entry.datum_von === entry.datum_bis || day === entry.datum_von && day === entry.datum_bis) {
+      return deleteEntry(entry.id)
+    }
+    if (day === entry.datum_von) {
+      const { error } = await supabase.from('dispo_eintraege').update({ datum_von: nextDay(day) }).eq('id', entry.id)
+      if (error) throw new Error(error.message)
+      return
+    }
+    if (day === entry.datum_bis) {
+      const { error } = await supabase.from('dispo_eintraege').update({ datum_bis: prevDay(day) }).eq('id', entry.id)
+      if (error) throw new Error(error.message)
+      return
+    }
+    // Mittlerer Tag: Original kürzen + zweiten Eintrag erstellen
+    const { error: e1 } = await supabase.from('dispo_eintraege').update({ datum_bis: prevDay(day) }).eq('id', entry.id)
+    if (e1) throw new Error(e1.message)
+    const { error: e2 } = await supabase.from('dispo_eintraege').insert({
+      user_id: entry.user_id, projekt_id: entry.projekt_id,
+      projekt_name: entry.projekt_name, is_internal: entry.is_internal,
+      datum_von: nextDay(day), datum_bis: entry.datum_bis, created_by: entry.created_by,
+    })
+    if (e2) throw new Error(e2.message)
   }
 
   return (
@@ -405,6 +433,7 @@ function DispoMatrix({ days }: { days: Date[] }) {
                       if (cellEntries.length > 0) {
                         setSelectedEntry(cellEntries[0])
                         setSelectedPersonName(person.name ?? '–')
+                        setTapDate(dateStr)
                       }
                     }}
                   >
@@ -430,8 +459,13 @@ function DispoMatrix({ days }: { days: Date[] }) {
       )}
       {selectedEntry && (
         <EntryDetailModal
-          entry={selectedEntry} personName={selectedPersonName ?? '–'}
+          entry={selectedEntry} personName={selectedPersonName ?? '–'} tapDate={tapDate}
           onClose={() => setSelectedEntry(null)} onDelete={deleteEntry}
+          onDeleteDay={async (entry, day) => {
+            await deleteSingleDay(entry, day)
+            setRefreshKey(k => k + 1)
+            setSelectedEntry(null)
+          }}
         />
       )}
     </div>
@@ -570,20 +604,20 @@ function NeuZuteilungModal({ persons, projekte, defaultFrom, defaultTo, createdB
           {/* Zeitraum */}
           <div>
             <p className="font-raleway text-[10px] uppercase tracking-widest text-muted mb-2">Zeitraum</p>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="min-w-0">
                 <label className="block text-[10px] uppercase tracking-widest text-muted/60 font-raleway mb-1">Von</label>
                 <input type="date" value={datumVon} required onChange={e => {
                     const v = e.target.value
                     setDatumVon(v)
                     if (datumBis < v) setDatumBis(v)
                   }}
-                  className="w-full bg-transparent border border-border text-white px-3 py-2.5 font-opensans text-sm focus:border-white outline-none transition-colors" />
+                  className="w-full min-w-0 bg-transparent border border-border text-white px-2 py-2.5 font-opensans text-sm focus:border-white outline-none transition-colors" />
               </div>
-              <div>
+              <div className="min-w-0">
                 <label className="block text-[10px] uppercase tracking-widest text-muted/60 font-raleway mb-1">Bis</label>
                 <input type="date" value={datumBis} required min={datumVon} onChange={e => setDatumBis(e.target.value)}
-                  className="w-full bg-transparent border border-border text-white px-3 py-2.5 font-opensans text-sm focus:border-white outline-none transition-colors" />
+                  className="w-full min-w-0 bg-transparent border border-border text-white px-2 py-2.5 font-opensans text-sm focus:border-white outline-none transition-colors" />
               </div>
             </div>
           </div>
@@ -705,8 +739,10 @@ function NeuZuteilungModal({ persons, projekte, defaultFrom, defaultTo, createdB
 
 // ── Eintrag Detail Modal ──────────────────────────────────────────────────────
 
-function EntryDetailModal({ entry, personName, onClose, onDelete }: {
-  entry: DispoEintrag; personName: string; onClose: () => void; onDelete: (id: string) => Promise<void>
+function EntryDetailModal({ entry, personName, tapDate, onClose, onDelete, onDeleteDay }: {
+  entry: DispoEintrag; personName: string; tapDate: string; onClose: () => void
+  onDelete: (id: string) => Promise<void>
+  onDeleteDay: (entry: DispoEintrag, day: string) => Promise<void>
 }) {
   const [confirming, setConfirming] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -714,6 +750,18 @@ function EntryDetailModal({ entry, personName, onClose, onDelete }: {
   const [mounted, setMounted] = useState(false)
   useEffect(() => { const id = requestAnimationFrame(() => setMounted(true)); return () => cancelAnimationFrame(id) }, [])
   const fmt = (d: Date) => `${d.getDate()}. ${MONTH_LONG[d.getMonth()]} ${d.getFullYear()}`
+  const isMultiDay = entry.datum_von !== entry.datum_bis
+
+  const handleDelete = async (dayOnly: boolean) => {
+    setDeleting(true); setDeleteError(null)
+    try {
+      if (dayOnly) await onDeleteDay(entry, tapDate)
+      else await onDelete(entry.id)
+    } catch (err) {
+      setDeleteError(err instanceof Error && err.message.includes('42501') ? 'Keine Berechtigung.' : 'Löschen fehlgeschlagen.')
+      setDeleting(false)
+    }
+  }
 
   return (
     <div
@@ -747,26 +795,17 @@ function EntryDetailModal({ entry, personName, onClose, onDelete }: {
             <p className="text-red-400 text-xs font-opensans border border-red-400/30 px-4 py-3 mb-3">{deleteError}</p>
           )}
           {confirming ? (
-            <div>
-              <p className="font-opensans text-xs text-muted mb-3">Zuteilung wirklich löschen?</p>
+            <div className="space-y-2">
+              {isMultiDay && tapDate && (
+                <button onClick={() => handleDelete(true)} disabled={deleting}
+                  className="w-full border border-red-400/40 text-red-400 py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:bg-red-400 hover:text-black transition-colors disabled:opacity-40">
+                  {deleting ? 'Löschen…' : `Nur ${fmt(parseLocalDate(tapDate))} löschen`}
+                </button>
+              )}
               <div className="flex gap-2">
-                <button
-                  onClick={async () => {
-                    setDeleting(true)
-                    setDeleteError(null)
-                    try { await onDelete(entry.id) }
-                    catch (err) {
-                      setDeleteError(
-                        err instanceof Error && err.message.includes('42501')
-                          ? 'Keine Berechtigung.'
-                          : 'Löschen fehlgeschlagen.'
-                      )
-                      setDeleting(false)
-                    }
-                  }}
-                  disabled={deleting}
+                <button onClick={() => handleDelete(false)} disabled={deleting}
                   className="flex-1 border border-red-400/40 text-red-400 py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:bg-red-400 hover:text-black transition-colors disabled:opacity-40">
-                  {deleting ? 'Löschen…' : 'Löschen'}
+                  {deleting ? 'Löschen…' : 'Gesamte Zuteilung'}
                 </button>
                 <button onClick={() => setConfirming(false)}
                   className="flex-1 border border-border text-muted py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:text-white transition-colors">
@@ -795,6 +834,7 @@ function MeineDispo({ days, userId }: { days: Date[]; userId: string | null }) {
   const [fetchError, setFetchError] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
   const [selectedEntry, setSelectedEntry] = useState<DispoEintrag | null>(null)
+  const [tapDate, setTapDate] = useState('')
   const weekKeyRef = useRef('')
 
   const from = fmtDate(days[0]), to = fmtDate(days[6])
@@ -931,7 +971,7 @@ function MeineDispo({ days, userId }: { days: Date[]; userId: string | null }) {
                           <div key={b.id}
                             className="flex-1 flex items-center justify-center border-b last:border-b-0 min-h-[72px] cursor-pointer active:opacity-60 overflow-hidden"
                             style={{ background: isInt ? STRIPE : '#ffffff', borderColor: isInt ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)' }}
-                            onClick={() => setSelectedEntry(b)}
+                            onClick={() => { setSelectedEntry(b); setTapDate(dateStr) }}
                           >
                             <p
                               className="font-raleway font-semibold text-[9px] uppercase tracking-widest select-none"
@@ -963,11 +1003,34 @@ function MeineDispo({ days, userId }: { days: Date[]; userId: string | null }) {
 
       {selectedEntry && (
         <MeineDispoDetailModal
-          entry={selectedEntry}
+          entry={selectedEntry} tapDate={tapDate}
           onClose={() => setSelectedEntry(null)}
           onDelete={async (id) => {
             const { error } = await supabase.from('dispo_eintraege').delete().eq('id', id)
             if (error) throw new Error(error.message)
+            setSelectedEntry(null)
+            setRefreshKey(k => k + 1)
+          }}
+          onDeleteDay={async (entry, day) => {
+            const von = entry.datum_von, bis = entry.datum_bis
+            if (von === bis) {
+              const { error } = await supabase.from('dispo_eintraege').delete().eq('id', entry.id)
+              if (error) throw new Error(error.message)
+            } else if (day === von) {
+              const { error } = await supabase.from('dispo_eintraege').update({ datum_von: nextDay(day) }).eq('id', entry.id)
+              if (error) throw new Error(error.message)
+            } else if (day === bis) {
+              const { error } = await supabase.from('dispo_eintraege').update({ datum_bis: prevDay(day) }).eq('id', entry.id)
+              if (error) throw new Error(error.message)
+            } else {
+              const { error: e1 } = await supabase.from('dispo_eintraege').update({ datum_bis: prevDay(day) }).eq('id', entry.id)
+              if (e1) throw new Error(e1.message)
+              const { error: e2 } = await supabase.from('dispo_eintraege').insert({
+                user_id: entry.user_id, projekt_id: entry.projekt_id, projekt_name: entry.projekt_name,
+                is_internal: entry.is_internal, datum_von: nextDay(day), datum_bis: entry.datum_bis, created_by: entry.created_by,
+              })
+              if (e2) throw new Error(e2.message)
+            }
             setSelectedEntry(null)
             setRefreshKey(k => k + 1)
           }}
@@ -980,15 +1043,17 @@ function MeineDispo({ days, userId }: { days: Date[]; userId: string | null }) {
 
 // ── Meine Dispo Detail Modal ──────────────────────────────────────────────────
 
-function MeineDispoDetailModal({ entry, onClose, onDelete, onNavigate }: {
-  entry: DispoEintrag
+function MeineDispoDetailModal({ entry, tapDate, onClose, onDelete, onDeleteDay, onNavigate }: {
+  entry: DispoEintrag; tapDate: string
   onClose: () => void
   onDelete: (id: string) => Promise<void>
+  onDeleteDay: (entry: DispoEintrag, day: string) => Promise<void>
   onNavigate?: () => void
 }) {
   const [confirming, setConfirming] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const isMultiDay = entry.datum_von !== entry.datum_bis
   const [mounted, setMounted] = useState(false)
   useEffect(() => { const id = requestAnimationFrame(() => setMounted(true)); return () => cancelAnimationFrame(id) }, [])
   const fmt = (d: Date) => `${d.getDate()}. ${MONTH_LONG[d.getMonth()]} ${d.getFullYear()}`
@@ -1041,39 +1106,46 @@ function MeineDispoDetailModal({ entry, onClose, onDelete, onNavigate }: {
           )}
           {confirming ? (
             <div className="space-y-2">
-              <p className="font-opensans text-xs text-muted text-center pt-1">Zuteilung wirklich entfernen?</p>
+              {isMultiDay && tapDate && (
+                <button
+                  onClick={async () => {
+                    setDeleting(true); setDeleteError(null)
+                    try { await onDeleteDay(entry, tapDate) }
+                    catch (err) {
+                      setDeleteError(err instanceof Error && err.message.includes('42501') ? 'Keine Berechtigung.' : 'Entfernen fehlgeschlagen.')
+                      setDeleting(false)
+                    }
+                  }}
+                  disabled={deleting}
+                  className="w-full border border-red-400/40 text-red-400 py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:bg-red-400 hover:text-black transition-colors disabled:opacity-40"
+                >
+                  {deleting ? 'Entfernen…' : `Nur ${fmt(parseLocalDate(tapDate))} entfernen`}
+                </button>
+              )}
               <div className="flex gap-2">
                 <button
                   onClick={async () => {
-                    setDeleting(true)
-                    setDeleteError(null)
+                    setDeleting(true); setDeleteError(null)
                     try { await onDelete(entry.id) }
                     catch (err) {
-                      const msg = err instanceof Error && err.message.includes('42501')
-                        ? 'Keine Berechtigung zum Entfernen.'
-                        : 'Entfernen fehlgeschlagen. Bitte nochmal versuchen.'
-                      setDeleteError(msg)
+                      setDeleteError(err instanceof Error && err.message.includes('42501') ? 'Keine Berechtigung.' : 'Entfernen fehlgeschlagen.')
                       setDeleting(false)
                     }
                   }}
                   disabled={deleting}
                   className="flex-1 border border-red-400/40 text-red-400 py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:bg-red-400 hover:text-black transition-colors disabled:opacity-40"
                 >
-                  {deleting ? 'Entfernen…' : 'Entfernen'}
+                  {deleting ? 'Entfernen…' : 'Gesamte Zuteilung'}
                 </button>
-                <button
-                  onClick={() => setConfirming(false)}
-                  className="flex-1 border border-border text-muted py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:text-white transition-colors"
-                >
+                <button onClick={() => setConfirming(false)}
+                  className="flex-1 border border-border text-muted py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:text-white transition-colors">
                   Abbrechen
                 </button>
               </div>
             </div>
           ) : (
-            <button
-              onClick={() => setConfirming(true)}
-              className="w-full border border-border text-muted py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:border-red-400/40 hover:text-red-400 transition-colors"
-            >
+            <button onClick={() => setConfirming(true)}
+              className="w-full border border-border text-muted py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:border-red-400/40 hover:text-red-400 transition-colors">
               Zuteilung entfernen
             </button>
           )}

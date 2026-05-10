@@ -36,12 +36,8 @@ export function Header() {
   const handleSignOut = async () => {
     if (signingOut) return
     setSigningOut(true)
-    try {
-      await signOut()
-      navigate('/login')
-    } catch {
-      setSigningOut(false)
-    }
+    try { await signOut() } catch {}
+    navigate('/login')
   }
 
   const rolleDisplay = profile?.rolle ? (ROLLE_DISPLAY[profile.rolle] ?? profile.rolle) : null
