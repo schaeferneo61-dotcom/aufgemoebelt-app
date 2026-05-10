@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, type FormEvent } from 'react'
+import { useState, useEffect, useMemo, useRef, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
@@ -36,25 +36,6 @@ function getWeekDays(ws: Date): Date[] {
   })
 }
 
-function getEaster(year: number): Date {
-  const a = year % 19, b = Math.floor(year / 100), c = year % 100
-  const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25)
-  const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30
-  const i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7
-  const m = Math.floor((a + 11 * h + 22 * l) / 451)
-  return new Date(year, Math.floor((h + l - 7 * m + 114) / 31) - 1, ((h + l - 7 * m + 114) % 31) + 1)
-}
-function getAustrianHolidays(year: number): Set<string> {
-  const h = new Set<string>()
-  const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-  const add = (d: Date, n: number) => { const r = new Date(d); r.setDate(r.getDate() + n); return r }
-  ;[`${year}-01-01`,`${year}-01-06`,`${year}-05-01`,`${year}-08-15`,
-    `${year}-10-26`,`${year}-11-01`,`${year}-12-08`,`${year}-12-25`,`${year}-12-26`].forEach(s => h.add(s))
-  const e = getEaster(year)
-  h.add(fmt(add(e,1))); h.add(fmt(add(e,39))); h.add(fmt(add(e,50))); h.add(fmt(add(e,60)))
-  return h
-}
-
 // ── Typen ─────────────────────────────────────────────────────────────────────
 
 interface DispoEintrag {
@@ -63,7 +44,7 @@ interface DispoEintrag {
   created_by: string | null; created_at: string
 }
 interface PersonProfile { id: string; name: string | null; rolle: string | null; email: string | null }
-interface Projekt { id: string; name: string; typ: 'intern' | 'extern' | null }
+interface Projekt { id: string; name: string; typ: 'intern' | 'extern' | null; status: string; created_at: string }
 
 const STRIPE = 'repeating-linear-gradient(-45deg,#fff,#fff 3px,#000 3px,#000 6px)'
 // Namensspalte + 7 gleiche Tages-Spalten
@@ -77,11 +58,12 @@ const DISPO_PW = 'EarlyAccess'
 function DispoPasswordGate({ onUnlock }: { onUnlock: () => void }) {
   const [pw, setPw] = useState('')
   const [error, setError] = useState(false)
+  const [shake, setShake] = useState(false)
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (pw === DISPO_PW) { sessionStorage.setItem(DISPO_KEY, '1'); onUnlock() }
-    else { setError(true); setPw('') }
+    else { setError(true); setPw(''); setShake(true); setTimeout(() => setShake(false), 400) }
   }
 
   return (
@@ -91,46 +73,47 @@ function DispoPasswordGate({ onUnlock }: { onUnlock: () => void }) {
         className="flex flex-col items-center justify-center px-4"
         style={{
           minHeight: '100svh',
-          paddingTop: 'calc(env(safe-area-inset-top) + 56px + 3rem)',
+          paddingTop: 'calc(env(safe-area-inset-top) + 56px)',
           paddingBottom: 'calc(env(safe-area-inset-bottom) + 3rem)',
         }}
       >
-        <div className="w-full max-w-sm">
-          <div className="mb-8 flex flex-col items-center gap-3">
-            <div className="w-14 h-14 border border-border flex items-center justify-center">
-              <ClockIcon className="w-6 h-6 text-white/50" />
+        <div className="w-full max-w-xs">
+          {/* Icon + Titel */}
+          <div className="mb-10 flex flex-col items-center gap-4">
+            <div className="relative">
+              <div className="w-16 h-16 border border-border flex items-center justify-center">
+                <LockIcon className="w-6 h-6 text-white" />
+              </div>
+              <div className="absolute -inset-2 border border-border/20 pointer-events-none" />
             </div>
             <div className="text-center">
-              <h1 className="font-raleway font-semibold text-white text-lg uppercase tracking-widest">Dispo</h1>
-              <p className="text-muted font-opensans text-xs mt-1">Early Access · Zugangscode erforderlich</p>
+              <h1 className="font-raleway font-semibold text-white text-base uppercase tracking-[0.25em]">Dispo</h1>
+              <p className="text-muted font-opensans text-[11px] mt-1.5 tracking-wide">Early Access</p>
             </div>
           </div>
-          <div className="border-t border-border mb-6" />
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-[10px] uppercase tracking-widest text-muted font-raleway mb-2">
-                Zugangscode
-              </label>
+
+          <form onSubmit={handleSubmit} className="space-y-3">
+            <div style={{ animation: shake ? 'shake 0.4s ease' : 'none' }}>
               <input
                 type="password" value={pw}
                 onChange={e => { setPw(e.target.value); setError(false) }}
-                autoFocus autoComplete="off" placeholder="••••••••••"
-                className="w-full bg-transparent border border-border text-white px-4 py-3.5 font-opensans text-sm focus:border-white outline-none transition-colors placeholder-muted"
+                autoFocus autoComplete="off" placeholder="Zugangscode"
+                className={`w-full bg-transparent border text-white px-4 py-4 font-raleway text-sm uppercase tracking-[0.25em] outline-none transition-colors placeholder-muted/40 ${error ? 'border-red-400/60' : 'border-border focus:border-white/60'}`}
               />
             </div>
             {error && (
-              <p className="text-red-400 text-xs font-opensans border border-red-400/30 px-4 py-3">
-                Falscher Zugangscode.
+              <p className="text-red-400/80 text-[10px] font-opensans text-center tracking-widest uppercase">
+                Falscher Zugangscode
               </p>
             )}
             <button type="submit" disabled={!pw}
-              className="w-full bg-white text-black py-4 font-raleway font-semibold text-xs uppercase tracking-widest hover:bg-muted transition-colors disabled:opacity-40">
+              className="w-full bg-white text-black py-4 font-raleway font-semibold text-[11px] uppercase tracking-[0.25em] hover:bg-white/90 transition-colors disabled:opacity-30">
               Zugang
             </button>
           </form>
-          <div className="border-b border-border mt-6" />
         </div>
       </div>
+      <style>{`@keyframes shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-8px)}40%{transform:translateX(8px)}60%{transform:translateX(-5px)}80%{transform:translateX(5px)}}`}</style>
     </div>
   )
 }
@@ -139,18 +122,10 @@ function DispoPasswordGate({ onUnlock }: { onUnlock: () => void }) {
 
 export function DispoPage() {
   const [unlocked, setUnlocked] = useState(() => sessionStorage.getItem(DISPO_KEY) === '1')
-  const { isAdminOrProjektleiter, profile } = useAuth()
+  const { isAdminOrProjektleiter, profile, loading: authLoading, profileReady } = useAuth()
   const [weekStart, setWeekStart] = useState(() => getWeekStart(new Date()))
 
   const days = useMemo(() => getWeekDays(weekStart), [weekStart])
-
-  // Feiertage – nur für Supabase-Matching, nicht für Styling
-  const holidays = useMemo(() => {
-    const years = new Set(days.map(d => d.getFullYear()))
-    const all = new Set<string>()
-    for (const y of years) getAustrianHolidays(y).forEach(s => all.add(s))
-    return all
-  }, [days])
 
   const weekLabel = useMemo(() => {
     const f = days[0], t = days[6]
@@ -174,35 +149,37 @@ export function DispoPage() {
         className="flex flex-col flex-1 overflow-hidden"
         style={{ paddingTop: 'calc(env(safe-area-inset-top) + 56px)', paddingBottom: 'env(safe-area-inset-bottom)' }}
       >
-        {/* Name + Projektzuteilung – nur Mitarbeiter */}
-        {!isAdminOrProjektleiter && (
-          <div className="px-4 pt-4 pb-3 border-b border-border shrink-0">
-            <h1 className="font-raleway font-semibold text-white text-xl uppercase tracking-widest leading-tight">
+        {/* Name + Projektzuteilung – nur Mitarbeiter, erst nach DB-Bestätigung zeigen */}
+        {profileReady && !isAdminOrProjektleiter && (
+          <div className="px-5 pt-5 pb-4 border-b border-border shrink-0">
+            <p className="text-muted/60 font-raleway text-[9px] uppercase tracking-[0.25em] mb-1">Projektzuteilung</p>
+            <h1 className="font-raleway font-semibold text-white text-2xl uppercase tracking-widest leading-none">
               {profile?.name ?? '–'}
             </h1>
-            <p className="text-muted font-opensans text-xs mt-0.5 tracking-wide">Projektzuteilung</p>
           </div>
         )}
 
         {/* Wochennavigation */}
-        <div className="flex items-center justify-center gap-2 py-3 border-b border-border shrink-0 px-4">
+        <div className="flex items-center justify-center gap-3 py-2.5 border-b border-border shrink-0 px-4">
           <button onClick={prevWeek}
-            className="border border-border text-white w-8 h-8 flex items-center justify-center hover:bg-white hover:text-black transition-colors shrink-0 text-base leading-none">
-            ‹
+            className="border border-border/60 text-white/70 w-8 h-8 flex items-center justify-center hover:bg-white hover:text-black hover:border-white transition-colors shrink-0">
+            <ChevronLeft className="w-3.5 h-3.5" />
           </button>
-          <span className="font-raleway text-xs uppercase tracking-widest text-white text-center flex-1 leading-tight">
+          <span className="font-raleway text-[11px] uppercase tracking-[0.2em] text-white text-center flex-1 leading-tight">
             {weekLabel}
           </span>
           <button onClick={nextWeek}
-            className="border border-border text-white w-8 h-8 flex items-center justify-center hover:bg-white hover:text-black transition-colors shrink-0 text-base leading-none">
-            ›
+            className="border border-border/60 text-white/70 w-8 h-8 flex items-center justify-center hover:bg-white hover:text-black hover:border-white transition-colors shrink-0">
+            <ChevronRight className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        {/* Hauptinhalt */}
+        {/* Hauptinhalt – warte auf DB-Bestätigung damit Admin nie kurz die Mitarbeiter-View sieht */}
         <div className="flex-1 overflow-hidden">
-          {isAdminOrProjektleiter ? (
-            <DispoMatrix days={days} holidays={holidays} />
+          {authLoading || !profileReady ? (
+            <DispoLoadingSkeleton />
+          ) : isAdminOrProjektleiter ? (
+            <DispoMatrix days={days} />
           ) : (
             <MeineDispo days={days} userId={profile?.id ?? null} />
           )}
@@ -212,9 +189,34 @@ export function DispoPage() {
   )
 }
 
+// ── Auth-Loading Skeleton ─────────────────────────────────────────────────────
+
+function DispoLoadingSkeleton() {
+  return (
+    <div className="h-full flex flex-col">
+      <div className="grid grid-cols-7 border-b border-border shrink-0">
+        {Array.from({ length: 7 }).map((_, i) => (
+          <div key={i}
+            className="border-r border-border last:border-r-0 py-3 animate-pulse"
+            style={{ background: '#0a0a0a', animationDelay: `${i * 60}ms` }}
+          />
+        ))}
+      </div>
+      <div className="flex-1 grid grid-cols-7">
+        {Array.from({ length: 7 }).map((_, i) => (
+          <div key={i}
+            className="border-r border-border last:border-r-0 animate-pulse"
+            style={{ background: '#060606', animationDelay: `${i * 80}ms` }}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Matrix-Ansicht (Admin / Projektleitung) ───────────────────────────────────
 
-function DispoMatrix({ days, holidays }: { days: Date[]; holidays: Set<string> }) {
+function DispoMatrix({ days }: { days: Date[] }) {
   const { user } = useAuth()
   const [persons, setPersons] = useState<PersonProfile[]>([])
   const [eintraege, setEintraege] = useState<DispoEintrag[]>([])
@@ -223,18 +225,41 @@ function DispoMatrix({ days, holidays }: { days: Date[]; holidays: Set<string> }
   const [showNeu, setShowNeu] = useState(false)
   const [selectedEntry, setSelectedEntry] = useState<DispoEintrag | null>(null)
   const [selectedPersonName, setSelectedPersonName] = useState<string | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const didMountRef = useRef(false)
 
   const from = fmtDate(days[0]), to = fmtDate(days[6])
   const todayStr = fmtDate(new Date())
 
   useEffect(() => { loadAll() }, []) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { loadEintraege() }, [from, to]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Skip the initial run — loadAll already fetches eintraege on mount
+  useEffect(() => {
+    if (!didMountRef.current) { didMountRef.current = true; return }
+    loadEintraege()
+  }, [from, to, refreshKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Realtime: refresh when any other client changes dispo_eintraege
+  useEffect(() => {
+    const channel = supabase
+      .channel('dispo-matrix')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'dispo_eintraege' }, () => {
+        setRefreshKey(k => k + 1)
+      })
+      .subscribe()
+    // Also refresh when the tab regains focus (e.g. user switches back from another device)
+    const onFocus = () => setRefreshKey(k => k + 1)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      supabase.removeChannel(channel)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadAll() {
     setLoading(true)
     const [pRes, prRes] = await Promise.all([
       supabase.from('profiles').select('id, name, rolle, email').order('name'),
-      supabase.from('projects').select('id, name, typ').eq('status', 1).order('name'),
+      supabase.from('projects').select('id, name, typ, status, created_at').eq('status', 'aktiv').order('name'),
     ])
     setPersons((pRes.data as PersonProfile[]) ?? [])
     setProjekte((prRes.data as Projekt[]) ?? [])
@@ -246,7 +271,10 @@ function DispoMatrix({ days, holidays }: { days: Date[]; holidays: Set<string> }
     const { data } = await supabase
       .from('dispo_eintraege').select('*')
       .lte('datum_von', to).gte('datum_bis', from)
-    setEintraege((data as DispoEintrag[]) ?? [])
+    const rows = (data as DispoEintrag[]) ?? []
+    setEintraege(rows)
+    // If the open detail modal no longer exists in the fresh data, close it
+    setSelectedEntry(prev => prev && rows.some(r => r.id === prev.id) ? prev : null)
   }
 
   const cellMap = useMemo(() => {
@@ -264,32 +292,27 @@ function DispoMatrix({ days, holidays }: { days: Date[]; holidays: Set<string> }
   }, [eintraege, days])
 
   async function deleteEntry(id: string) {
-    await supabase.from('dispo_eintraege').delete().eq('id', id)
-    await loadEintraege()
+    const { error } = await supabase.from('dispo_eintraege').delete().eq('id', id)
+    if (error) throw new Error(error.message)
+    setRefreshKey(k => k + 1)
     setSelectedEntry(null)
   }
-
-  // holidays used for potential future styling
-  void holidays
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* Aktionsleiste */}
-      <div className="flex items-center gap-5 px-4 py-3 border-b border-border shrink-0">
-        <button
-          onClick={() => setShowNeu(true)}
-          className="group inline-flex items-center gap-2 border border-border px-4 py-2.5 hover:bg-white hover:border-white transition-colors shrink-0"
-        >
-          <ClockIcon className="w-4 h-4 text-white group-hover:text-black transition-colors" />
-          <span className="font-raleway font-semibold text-white group-hover:text-black text-[10px] uppercase tracking-widest transition-colors whitespace-nowrap">
-            Neue Zuteilung
-          </span>
-        </button>
-        <div className="flex items-center gap-4">
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-border shrink-0 gap-4">
+        <div className="flex items-center gap-4 shrink-0">
           <LegendItem color={{ background: '#fff' }} label="Extern" />
           <LegendItem color={{ background: STRIPE }} label="Intern" />
-          <LegendItem color={{ background: '#000', outline: '1px solid #333' }} label="Kein Projekt" />
+          <LegendItem color={{ background: '#000', outline: '1px solid #2a2a2a' }} label="Frei" />
         </div>
+        <button
+          onClick={() => setShowNeu(true)}
+          className="bg-white text-black px-4 py-2 hover:bg-white/90 transition-colors shrink-0 font-raleway font-semibold text-[10px] uppercase tracking-widest whitespace-nowrap"
+        >
+          + Zuteilen
+        </button>
       </div>
 
       {/* Grid */}
@@ -318,23 +341,21 @@ function DispoMatrix({ days, holidays }: { days: Date[]; holidays: Set<string> }
       ) : (
         <div className="flex-1 overflow-y-auto overflow-x-hidden">
           {/* Sticky Header */}
-          <div className="grid sticky top-0 z-10 bg-black border-b-2 border-border" style={{ gridTemplateColumns: GRID_COLS }}>
-            <div className="border-r border-border px-2 py-2.5 text-[9px] font-raleway uppercase tracking-widest text-muted/60">
-              Name
-            </div>
+          <div className="grid sticky top-0 z-10 bg-black border-b border-border" style={{ gridTemplateColumns: GRID_COLS }}>
+            <div className="border-r border-border px-2 py-3" />
             {days.map((day, i) => {
               const dateStr = fmtDate(day)
               const isToday = dateStr === todayStr
               return (
                 <div key={dateStr}
-                  className="border-r border-border last:border-r-0 text-center py-2"
+                  className="border-r border-border last:border-r-0 text-center py-2.5"
                   style={{ background: isToday ? '#ffffff' : 'transparent' }}
                 >
-                  <p className={`font-raleway text-[9px] uppercase tracking-widest ${isToday ? 'text-black' : 'text-muted'}`}>
+                  <p className={`font-raleway text-[9px] uppercase tracking-widest ${isToday ? 'text-black font-semibold' : 'text-muted'}`}>
                     {DAY_SHORT[i]}
                   </p>
-                  <p className={`font-opensans text-[11px] font-semibold mt-0.5 ${isToday ? 'text-black' : 'text-white'}`}>
-                    {day.getDate()}.
+                  <p className={`font-opensans text-[12px] font-semibold mt-0.5 ${isToday ? 'text-black' : 'text-white/80'}`}>
+                    {day.getDate()}
                   </p>
                 </div>
               )
@@ -349,15 +370,21 @@ function DispoMatrix({ days, holidays }: { days: Date[]; holidays: Set<string> }
           ) : persons.map((person, idx) => (
             <div key={person.id}
               className="grid border-b border-border last:border-b-0"
-              style={{ gridTemplateColumns: GRID_COLS, background: idx % 2 === 0 ? '#000' : '#050505' }}
+              style={{ gridTemplateColumns: GRID_COLS, background: idx % 2 === 0 ? '#000' : '#060606' }}
             >
-              <div className="border-r border-border px-2 py-2.5 overflow-hidden flex items-center">
+              <div className="border-r border-border px-2 py-2 overflow-hidden flex flex-col justify-center">
                 <span className="font-opensans text-[10px] text-white block truncate leading-tight">
-                  {person.name ?? person.email ?? '–'}
+                  {(person.name ?? '–').split(' ')[0]}
                 </span>
+                {person.name && person.name.includes(' ') && (
+                  <span className="font-opensans text-[9px] text-muted/60 block truncate leading-tight">
+                    {person.name.split(' ').slice(1).join(' ')}
+                  </span>
+                )}
               </div>
               {days.map(day => {
                 const dateStr = fmtDate(day)
+                const isToday = dateStr === todayStr
                 const cellEntries = cellMap.get(`${person.id}|${dateStr}`) ?? []
                 const hasExt = cellEntries.some(e => !e.is_internal)
                 const hasInt = cellEntries.some(e => e.is_internal)
@@ -367,20 +394,24 @@ function DispoMatrix({ days, holidays }: { days: Date[]; holidays: Set<string> }
                 let bg: string
                 if (hasExt) bg = '#ffffff'
                 else if (hasInt) bg = STRIPE
-                else bg = 'transparent'
+                else bg = isToday ? '#111' : 'transparent'
 
                 return (
                   <div key={dateStr}
-                    className="border-r border-border last:border-r-0 h-10 transition-opacity hover:opacity-70"
+                    className="border-r border-border last:border-r-0 h-10 transition-opacity hover:opacity-70 relative"
                     style={{ background: bg, cursor: cellEntries.length > 0 ? 'pointer' : 'default' }}
                     title={title}
                     onClick={() => {
                       if (cellEntries.length > 0) {
                         setSelectedEntry(cellEntries[0])
-                        setSelectedPersonName(person.name ?? person.email ?? '–')
+                        setSelectedPersonName(person.name ?? '–')
                       }
                     }}
-                  />
+                  >
+                    {isToday && !hasExt && !hasInt && (
+                      <div className="absolute inset-x-0 top-0 h-px bg-white/20" />
+                    )}
+                  </div>
                 )
               })}
             </div>
@@ -418,20 +449,65 @@ function NeuZuteilungModal({ persons, projekte, defaultFrom, defaultTo, createdB
   const [datumVon, setDatumVon] = useState(defaultFrom)
   const [datumBis, setDatumBis] = useState(defaultTo)
   const [projektId, setProjektId] = useState('')
-  const [isInternal, setIsInternal] = useState(false)
-  const [notiz, setNotiz] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
+  const [projektSearch, setProjektSearch] = useState('')
+  const [projektSort, setProjektSort] = useState<'name' | 'datum'>('name')
+  const [typFilter, setTypFilter] = useState<'all' | 'intern' | 'extern'>('all')
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { const id = requestAnimationFrame(() => setMounted(true)); return () => cancelAnimationFrame(id) }, [])
+
+
+  // Fuzzy-Suche: Zeichen müssen in Reihenfolge vorkommen (Tippfehler-tolerant)
+  function fuzzyMatch(text: string, q: string): boolean {
+    if (!q) return true
+    const t = text.toLowerCase(); const qLow = q.toLowerCase()
+    if (t.includes(qLow)) return true
+    let qi = 0
+    for (let i = 0; i < t.length && qi < qLow.length; i++) { if (t[i] === qLow[qi]) qi++ }
+    return qi === qLow.length
+  }
+  function fuzzyScore(text: string, q: string): number {
+    const t = text.toLowerCase(); const qLow = q.toLowerCase()
+    if (t.startsWith(qLow)) return 3
+    if (t.includes(qLow)) return 2
+    return 1
+  }
 
   const filteredPersons = useMemo(
-    () => persons.filter(p => (p.name ?? p.email ?? '').toLowerCase().includes(search.toLowerCase())),
+    () => persons
+      .filter(p => fuzzyMatch(p.name ?? '', search))
+      .sort((a, b) => search ? fuzzyScore(b.name ?? '', search) - fuzzyScore(a.name ?? '', search) : 0),
     [persons, search]
   )
 
-  const handleProjektChange = (id: string) => {
-    setProjektId(id)
-    if (id) { const p = projekte.find(p => p.id === id); if (p) setIsInternal(p.typ === 'intern') }
+  const sortedProjekte = useMemo(() => {
+    const filtered = projekte
+      .filter(p => typFilter === 'all' || p.typ === typFilter)
+      .filter(p => fuzzyMatch(p.name, projektSearch))
+    const sorted = projektSort === 'datum'
+      ? [...filtered].sort((a, b) => b.created_at.localeCompare(a.created_at))
+      : [...filtered].sort((a, b) => {
+          if (projektSearch) return fuzzyScore(b.name, projektSearch) - fuzzyScore(a.name, projektSearch)
+          return a.name.localeCompare(b.name, 'de')
+        })
+    // Gewähltes Projekt immer oben – auch wenn es nicht zur Suche passt
+    if (projektId) {
+      const idx = sorted.findIndex(p => p.id === projektId)
+      if (idx > 0) sorted.unshift(...sorted.splice(idx, 1))
+      else if (idx === -1) {
+        const sel = projekte.find(p => p.id === projektId)
+        if (sel) sorted.unshift(sel)
+      }
+    }
+    return sorted
+  }, [projekte, projektSearch, projektSort, projektId, typFilter])
+
+  const selectedProjekt = projekte.find(p => p.id === projektId) ?? null
+
+  const handleProjektSelect = (id: string) => {
+    setProjektId(prev => prev === id ? '' : id)
   }
   const togglePerson = (id: string) => setSelectedIds(prev => {
     const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n
@@ -441,19 +517,28 @@ function NeuZuteilungModal({ persons, projekte, defaultFrom, defaultTo, createdB
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
+    if (saving) return // prevent double-submit
     if (selectedIds.size === 0) { setError('Bitte mindestens eine Person auswählen.'); return }
     if (datumVon > datumBis) { setError('Von-Datum muss vor dem Bis-Datum liegen.'); return }
     setSaving(true); setError(null)
-    const proj = projektId ? projekte.find(p => p.id === projektId) : null
+    const proj = selectedProjekt
+    const isInternal = proj?.typ === 'intern'
     const { error: dbErr } = await supabase.from('dispo_eintraege').insert(
       Array.from(selectedIds).map(userId => ({
         user_id: userId, projekt_id: projektId || null,
         projekt_name: proj?.name ?? null, is_internal: isInternal,
         datum_von: datumVon, datum_bis: datumBis,
-        notiz: notiz.trim() || null, created_by: createdBy,
+        notiz: null, created_by: createdBy,
       }))
     )
-    if (dbErr) { setError('Fehler: ' + dbErr.message); setSaving(false); return }
+    if (dbErr) {
+      const msg = dbErr.code === '23514' ? 'Zeitraum ungültig (Von muss vor Bis liegen).'
+        : dbErr.code === '42501' ? 'Keine Berechtigung zum Speichern.'
+        : 'Fehler beim Speichern. Bitte nochmal versuchen.'
+      setError(msg)
+      setSaving(false)
+      return
+    }
     onSaved()
   }
 
@@ -462,22 +547,21 @@ function NeuZuteilungModal({ persons, projekte, defaultFrom, defaultTo, createdB
     : selectedIds.size === 1 ? '1 Person zuteilen' : `${selectedIds.size} Personen zuteilen`
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center sm:px-4" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center px-4"
+      style={{ background: mounted ? 'rgba(0,0,0,0.8)' : 'rgba(0,0,0,0)', backdropFilter: 'blur(4px)', transition: 'background 250ms' }}
+      onClick={saving ? undefined : onClose}
+    >
       <div
         className="bg-black border border-border w-full sm:max-w-lg max-h-[92svh] overflow-y-auto"
+        style={{ transform: mounted ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 300ms cubic-bezier(0.32,0.72,0,1)' }}
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-5 border-b border-border">
-          <div className="flex items-center gap-3">
-            <ClockIcon className="w-4 h-4 text-muted" />
-            <h2 className="font-raleway font-semibold text-white text-xs uppercase tracking-widest">
-              Neue Zuteilung
-            </h2>
-          </div>
-          <button onClick={onClose} className="text-muted hover:text-white transition-colors w-8 h-8 flex items-center justify-center border border-transparent hover:border-border">
-            ✕
-          </button>
+        <div className="flex items-center justify-center px-6 py-5 border-b border-border">
+          <h2 className="font-raleway font-semibold text-white text-xs uppercase tracking-widest">
+            Neue Zuteilung
+          </h2>
         </div>
 
         <form onSubmit={handleSubmit} className="px-6 py-5 space-y-5">
@@ -487,7 +571,11 @@ function NeuZuteilungModal({ persons, projekte, defaultFrom, defaultTo, createdB
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-[10px] uppercase tracking-widest text-muted/60 font-raleway mb-1">Von</label>
-                <input type="date" value={datumVon} required onChange={e => setDatumVon(e.target.value)}
+                <input type="date" value={datumVon} required onChange={e => {
+                    const v = e.target.value
+                    setDatumVon(v)
+                    if (datumBis < v) setDatumBis(v)
+                  }}
                   className="w-full bg-transparent border border-border text-white px-3 py-2.5 font-opensans text-sm focus:border-white outline-none transition-colors" />
               </div>
               <div>
@@ -515,9 +603,13 @@ function NeuZuteilungModal({ persons, projekte, defaultFrom, defaultTo, createdB
               </div>
             </div>
             <input type="text" placeholder="Suchen…" value={search} onChange={e => setSearch(e.target.value)}
-              className="w-full bg-transparent border border-border text-white px-3 py-2 font-opensans text-xs focus:border-white outline-none transition-colors placeholder-muted mb-1.5" />
-            <div className="border border-border divide-y divide-border/60 max-h-44 overflow-y-auto">
-              {filteredPersons.map(p => (
+              className="w-full bg-transparent border border-border text-white px-3 py-2 font-opensans text-xs focus:border-white outline-none transition-colors placeholder-muted mb-2" />
+            <div className="border border-border divide-y divide-border/40 max-h-44 overflow-y-auto">
+              {filteredPersons.length === 0 ? (
+                <div className="px-4 py-3">
+                  <span className="font-opensans text-xs text-muted">Keine Personen gefunden.</span>
+                </div>
+              ) : filteredPersons.map(p => (
                 <label key={p.id}
                   className={`flex items-center gap-3 px-4 py-2.5 cursor-pointer transition-colors select-none ${selectedIds.has(p.id) ? 'bg-white/[0.06]' : 'hover:bg-white/[0.03]'}`}
                 >
@@ -525,7 +617,7 @@ function NeuZuteilungModal({ persons, projekte, defaultFrom, defaultTo, createdB
                     {selectedIds.has(p.id) && <span className="text-black text-[10px] leading-none">✓</span>}
                   </div>
                   <input type="checkbox" checked={selectedIds.has(p.id)} onChange={() => togglePerson(p.id)} className="sr-only" />
-                  <span className="font-opensans text-xs text-white leading-tight">{p.name ?? p.email ?? '–'}</span>
+                  <span className="font-opensans text-xs text-white leading-tight">{p.name ?? '–'}</span>
                 </label>
               ))}
             </div>
@@ -533,41 +625,56 @@ function NeuZuteilungModal({ persons, projekte, defaultFrom, defaultTo, createdB
 
           {/* Projekt */}
           <div>
-            <label className="block font-raleway text-[10px] uppercase tracking-widest text-muted mb-1.5">
-              Projekt <span className="text-muted/50 normal-case tracking-normal font-opensans">(optional)</span>
-            </label>
-            <select value={projektId} onChange={e => handleProjektChange(e.target.value)}
-              className="w-full bg-black border border-border text-white px-3 py-2.5 font-opensans text-sm focus:border-white outline-none transition-colors">
-              <option value="">– Kein Projekt –</option>
-              {projekte.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-          </div>
-
-          {/* Art */}
-          <div>
-            <p className="font-raleway text-[10px] uppercase tracking-widest text-muted mb-2">Art</p>
-            <div className="flex gap-2">
-              {(['Extern', 'Intern'] as const).map(lbl => (
-                <button key={lbl} type="button" onClick={() => setIsInternal(lbl === 'Intern')}
-                  className={`flex-1 py-2.5 border font-raleway text-[10px] uppercase tracking-widest transition-colors ${
-                    isInternal === (lbl === 'Intern')
-                      ? 'bg-white text-black border-white'
-                      : 'border-border text-muted hover:border-white/40 hover:text-white/70'
-                  }`}>
-                  {lbl}
-                </button>
-              ))}
+            <div className="flex items-center justify-between mb-2">
+              <p className="font-raleway text-[10px] uppercase tracking-widest text-muted">Projekt</p>
+              <div className="flex gap-2">
+                {(['all', 'extern', 'intern'] as const).map(f => (
+                  <button key={f} type="button" onClick={() => setTypFilter(f)}
+                    className={`font-raleway text-[9px] uppercase tracking-widest transition-colors ${typFilter === f ? 'text-white' : 'text-muted hover:text-white/70'}`}>
+                    {f === 'all' ? 'Alle' : f === 'extern' ? 'Extern' : 'Intern'}
+                  </button>
+                ))}
+                <span className="text-border">|</span>
+                {(['name', 'datum'] as const).map(s => (
+                  <button key={s} type="button" onClick={() => setProjektSort(s)}
+                    className={`font-raleway text-[9px] uppercase tracking-widest transition-colors ${projektSort === s ? 'text-white' : 'text-muted hover:text-white/70'}`}>
+                    {s === 'name' ? 'A–Z' : 'Neu'}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
-
-          {/* Notiz */}
-          <div>
-            <label className="block font-raleway text-[10px] uppercase tracking-widest text-muted mb-1.5">
-              Notiz <span className="text-muted/50 normal-case tracking-normal font-opensans">(optional)</span>
-            </label>
-            <textarea value={notiz} onChange={e => setNotiz(e.target.value)} rows={2}
-              placeholder="z. B. Baustelle XY, Urlaubsvertretung…"
-              className="w-full bg-transparent border border-border text-white px-3 py-2 font-opensans text-sm focus:border-white outline-none transition-colors resize-none placeholder-muted" />
+            <input type="text" placeholder="Projekt suchen…" value={projektSearch}
+              onChange={e => setProjektSearch(e.target.value)}
+              className="w-full bg-transparent border border-border text-white px-3 py-2 font-opensans text-xs focus:border-white outline-none transition-colors placeholder-muted mb-2" />
+            <div className="border border-border divide-y divide-border/40 max-h-36 overflow-y-auto">
+              <label className={`flex items-center gap-3 px-4 py-2.5 cursor-pointer transition-colors select-none ${!projektId ? 'bg-white/[0.06]' : 'hover:bg-white/[0.03]'}`}>
+                <div className={`w-4 h-4 border shrink-0 flex items-center justify-center transition-all ${!projektId ? 'bg-white border-white' : 'border-border'}`}>
+                  {!projektId && <span className="text-black text-[10px] leading-none">✓</span>}
+                </div>
+                <input type="radio" checked={!projektId} onChange={() => { setProjektId(''); }} className="sr-only" />
+                <span className="font-opensans text-xs text-muted leading-tight">Kein Projekt</span>
+              </label>
+              {sortedProjekte.map(p => {
+                const isSel = projektId === p.id
+                return (
+                  <label key={p.id}
+                    className={`flex items-center gap-3 px-4 py-2.5 cursor-pointer transition-colors select-none ${isSel ? 'bg-white' : 'hover:bg-white/[0.03]'}`}
+                    onClick={() => handleProjektSelect(p.id)}
+                  >
+                    <div className={`w-4 h-4 border shrink-0 flex items-center justify-center transition-all ${isSel ? 'bg-black border-black' : 'border-border'}`}>
+                      {isSel && <span className="text-white text-[10px] leading-none">✓</span>}
+                    </div>
+                    <span className={`font-opensans text-xs leading-tight flex-1 ${isSel ? 'text-black font-semibold' : 'text-white'}`}>{p.name}</span>
+                    {isSel && <span className="font-raleway text-[8px] uppercase tracking-widest text-black/50 shrink-0">Ausgewählt</span>}
+                  </label>
+                )
+              })}
+              {sortedProjekte.length === 0 && (
+                <div className="px-4 py-3">
+                  <span className="font-opensans text-xs text-muted">Keine Projekte gefunden.</span>
+                </div>
+              )}
+            </div>
           </div>
 
           {error && (
@@ -580,8 +687,8 @@ function NeuZuteilungModal({ persons, projekte, defaultFrom, defaultTo, createdB
               {saving ? 'Wird gespeichert…' : label}
             </button>
             <button type="button" onClick={onClose}
-              className="border border-border text-white px-5 font-raleway text-xs uppercase tracking-widest hover:bg-white hover:text-black transition-colors">
-              ✕
+              className="border border-border text-white px-5 py-3.5 font-raleway text-xs uppercase tracking-widest hover:bg-white hover:text-black transition-colors">
+              Abbrechen
             </button>
           </div>
         </form>
@@ -593,18 +700,33 @@ function NeuZuteilungModal({ persons, projekte, defaultFrom, defaultTo, createdB
 // ── Eintrag Detail Modal ──────────────────────────────────────────────────────
 
 function EntryDetailModal({ entry, personName, onClose, onDelete }: {
-  entry: DispoEintrag; personName: string; onClose: () => void; onDelete: (id: string) => void
+  entry: DispoEintrag; personName: string; onClose: () => void; onDelete: (id: string) => Promise<void>
 }) {
   const [confirming, setConfirming] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { const id = requestAnimationFrame(() => setMounted(true)); return () => cancelAnimationFrame(id) }, [])
   const fmt = (d: Date) => `${d.getDate()}. ${MONTH_LONG[d.getMonth()]} ${d.getFullYear()}`
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center px-4" onClick={onClose}>
-      <div className="bg-black border border-border w-full max-w-sm" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center px-4"
+      style={{ background: mounted ? 'rgba(0,0,0,0.8)' : 'rgba(0,0,0,0)', backdropFilter: 'blur(4px)', transition: 'background 200ms' }}
+      onClick={onClose}
+    >
+      <div
+        className="bg-black border border-border w-full max-w-sm"
+        style={{ opacity: mounted ? 1 : 0, transform: mounted ? 'scale(1)' : 'scale(0.96)', transition: 'opacity 200ms, transform 200ms' }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-5 border-b border-border">
           <h2 className="font-raleway font-semibold text-white text-xs uppercase tracking-widest">Zuteilung</h2>
-          <button onClick={onClose} className="text-muted hover:text-white transition-colors text-sm">✕</button>
+          <button onClick={onClose} className="text-muted hover:text-white transition-colors">
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
+              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
         </div>
         <div className="px-6 py-5 space-y-4">
           <InfoRow label="Person" value={personName} />
@@ -615,12 +737,27 @@ function EntryDetailModal({ entry, personName, onClose, onDelete }: {
           {entry.notiz && <InfoRow label="Notiz" value={entry.notiz} />}
         </div>
         <div className="px-6 pb-5">
+          {deleteError && (
+            <p className="text-red-400 text-xs font-opensans border border-red-400/30 px-4 py-3 mb-3">{deleteError}</p>
+          )}
           {confirming ? (
             <div>
               <p className="font-opensans text-xs text-muted mb-3">Zuteilung wirklich löschen?</p>
               <div className="flex gap-2">
                 <button
-                  onClick={async () => { setDeleting(true); await onDelete(entry.id); setDeleting(false) }}
+                  onClick={async () => {
+                    setDeleting(true)
+                    setDeleteError(null)
+                    try { await onDelete(entry.id) }
+                    catch (err) {
+                      setDeleteError(
+                        err instanceof Error && err.message.includes('42501')
+                          ? 'Keine Berechtigung.'
+                          : 'Löschen fehlgeschlagen.'
+                      )
+                      setDeleting(false)
+                    }
+                  }}
                   disabled={deleting}
                   className="flex-1 border border-red-400/40 text-red-400 py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:bg-red-400 hover:text-black transition-colors disabled:opacity-40">
                   {deleting ? 'Löschen…' : 'Löschen'}
@@ -649,20 +786,53 @@ function MeineDispo({ days, userId }: { days: Date[]; userId: string | null }) {
   const navigate = useNavigate()
   const [eintraege, setEintraege] = useState<DispoEintrag[]>([])
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState(false)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [selectedEntry, setSelectedEntry] = useState<DispoEintrag | null>(null)
+  const weekKeyRef = useRef('')
 
   const from = fmtDate(days[0]), to = fmtDate(days[6])
   const todayStr = fmtDate(new Date())
 
+  // Realtime: refresh when admin changes this user's entries
+  useEffect(() => {
+    if (!userId) return
+    const channel = supabase
+      .channel('dispo-meins-' + userId)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'dispo_eintraege',
+        filter: `user_id=eq.${userId}` }, () => {
+        setRefreshKey(k => k + 1)
+      })
+      .subscribe()
+    const onFocus = () => setRefreshKey(k => k + 1)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      supabase.removeChannel(channel)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [userId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Close any open modal when the user navigates to a different week
+  useEffect(() => { setSelectedEntry(null) }, [from, to]) // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (!userId) { setLoading(false); return }
-    setLoading(true)
+    // Show skeleton on initial load or week navigation; suppress on background refreshes
+    const weekKey = `${from}|${to}`
+    if (weekKey !== weekKeyRef.current) {
+      setLoading(true)
+      weekKeyRef.current = weekKey
+    }
+    setFetchError(false)
     supabase.from('dispo_eintraege').select('*')
-      .eq('user_id', userId).lte('datum_von', to).gte('datum_bis', from)
-      .then(({ data }) => {
-        setEintraege((data as DispoEintrag[]) ?? [])
+      .eq('user_id', userId)
+      .lte('datum_von', to).gte('datum_bis', from)
+      .then(({ data, error }) => {
+        if (error) { setFetchError(true) }
+        else { setEintraege((data as DispoEintrag[]) ?? []) }
         setLoading(false)
       })
-  }, [from, to, userId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [from, to, userId, refreshKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const byDate = useMemo(() => {
     const m = new Map<string, DispoEintrag[]>()
@@ -684,32 +854,44 @@ function MeineDispo({ days, userId }: { days: Date[]; userId: string | null }) {
     </div>
   )
 
+  if (fetchError) return (
+    <div className="flex flex-col items-center justify-center h-full gap-4">
+      <p className="font-opensans text-sm text-muted">Daten konnten nicht geladen werden.</p>
+      <button
+        onClick={() => { setFetchError(false); setLoading(true); setRefreshKey(k => k + 1) }}
+        className="border border-border text-white px-4 py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:bg-white hover:text-black transition-colors"
+      >
+        Nochmal versuchen
+      </button>
+    </div>
+  )
+
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* Legende */}
       <div className="flex items-center gap-5 px-4 py-2.5 border-b border-border shrink-0">
         <LegendItem color={{ background: '#fff' }} label="Extern" />
         <LegendItem color={{ background: STRIPE }} label="Intern" />
-        <LegendItem color={{ background: '#000', outline: '1px solid #2a2a2a' }} label="Kein Projekt" />
+        <LegendItem color={{ background: '#000', outline: '1px solid #2a2a2a' }} label="Frei" />
       </div>
 
       {/* Wochengitter */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Tag-Kopfzeile */}
-        <div className="grid grid-cols-7 shrink-0 border-b-2 border-border">
+        <div className="grid grid-cols-7 shrink-0 border-b border-border">
           {days.map((day, i) => {
             const dateStr = fmtDate(day)
             const isToday = dateStr === todayStr
             return (
               <div key={dateStr}
-                className="border-r border-border last:border-r-0 text-center py-2.5"
+                className="border-r border-border last:border-r-0 text-center py-3"
                 style={{ background: isToday ? '#ffffff' : '#000000' }}
               >
-                <p className={`font-raleway font-semibold text-[9px] uppercase tracking-widest ${isToday ? 'text-black' : 'text-muted'}`}>
+                <p className={`font-raleway text-[9px] uppercase tracking-widest ${isToday ? 'text-black font-semibold' : 'text-muted'}`}>
                   {DAY_SHORT[i]}
                 </p>
-                <p className={`font-opensans text-sm font-semibold mt-0.5 ${isToday ? 'text-black' : 'text-white'}`}>
-                  {day.getDate()}.
+                <p className={`font-opensans text-sm font-semibold mt-1 ${isToday ? 'text-black' : 'text-white/80'}`}>
+                  {day.getDate()}
                 </p>
               </div>
             )
@@ -727,32 +909,41 @@ function MeineDispo({ days, userId }: { days: Date[]; userId: string | null }) {
             ))}
           </div>
         ) : (
-          <div className="flex-1 grid grid-cols-7 overflow-hidden">
+          <div className="flex-1 grid grid-cols-7 overflow-hidden border-b border-white/20">
             {days.map(day => {
               const dateStr = fmtDate(day)
               const bookings = byDate.get(dateStr) ?? []
               return (
                 <div key={dateStr} className="border-r border-border last:border-r-0 flex flex-col overflow-y-auto">
                   {bookings.length === 0
-                    ? <div className="flex-1 bg-black" />
+                    ? <div className="flex-1 bg-black relative">
+                        {dateStr === todayStr && <div className="absolute inset-x-0 top-0 h-px bg-white/20" />}
+                      </div>
                     : bookings.map(b => {
                         const isInt = b.is_internal
                         return (
                           <div key={b.id}
-                            className={`flex-1 flex flex-col justify-start p-2 border-b border-black/10 last:border-b-0 min-h-[64px] ${b.projekt_id ? 'cursor-pointer active:opacity-60' : ''}`}
-                            style={{ background: isInt ? STRIPE : '#ffffff' }}
-                            onClick={() => { if (b.projekt_id) navigate(`/projekt/${b.projekt_id}`) }}
+                            className="flex-1 flex items-center justify-center border-b last:border-b-0 min-h-[72px] cursor-pointer active:opacity-60 overflow-hidden"
+                            style={{ background: isInt ? STRIPE : '#ffffff', borderColor: isInt ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)' }}
+                            onClick={() => setSelectedEntry(b)}
                           >
-                            <p className="font-raleway font-semibold text-[9px] uppercase tracking-wider leading-snug"
-                              style={{ color: isInt ? '#ffffff' : '#000000' }}>
+                            <p
+                              className="font-raleway font-semibold text-[9px] uppercase tracking-widest select-none"
+                              style={{
+                                color: '#000',
+                                writingMode: 'vertical-lr',
+                                textOrientation: 'mixed',
+                                maxHeight: '90%',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                // Black text on white stripe: clearly visible.
+                                // On black stripe: white halo ensures readability.
+                                textShadow: isInt ? '0 0 3px rgba(255,255,255,0.95), 0 0 3px rgba(255,255,255,0.95)' : 'none',
+                              }}
+                            >
                               {b.projekt_name ?? '–'}
                             </p>
-                            {b.notiz && (
-                              <p className="font-opensans text-[8px] mt-1 leading-snug opacity-60"
-                                style={{ color: isInt ? '#ffffff' : '#000000' }}>
-                                {b.notiz}
-                              </p>
-                            )}
                           </div>
                         )
                       })
@@ -762,6 +953,125 @@ function MeineDispo({ days, userId }: { days: Date[]; userId: string | null }) {
             })}
           </div>
         )}
+      </div>
+
+      {selectedEntry && (
+        <MeineDispoDetailModal
+          entry={selectedEntry}
+          onClose={() => setSelectedEntry(null)}
+          onDelete={async (id) => {
+            const { error } = await supabase.from('dispo_eintraege').delete().eq('id', id)
+            if (error) throw new Error(error.message)
+            setSelectedEntry(null)
+            setRefreshKey(k => k + 1)
+          }}
+          onNavigate={selectedEntry.projekt_id ? () => navigate(`/projekt/${selectedEntry.projekt_id}`) : undefined}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Meine Dispo Detail Modal ──────────────────────────────────────────────────
+
+function MeineDispoDetailModal({ entry, onClose, onDelete, onNavigate }: {
+  entry: DispoEintrag
+  onClose: () => void
+  onDelete: (id: string) => Promise<void>
+  onNavigate?: () => void
+}) {
+  const [confirming, setConfirming] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { const id = requestAnimationFrame(() => setMounted(true)); return () => cancelAnimationFrame(id) }, [])
+  const fmt = (d: Date) => `${d.getDate()}. ${MONTH_LONG[d.getMonth()]} ${d.getFullYear()}`
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center px-4"
+      style={{ background: mounted ? 'rgba(0,0,0,0.8)' : 'rgba(0,0,0,0)', backdropFilter: 'blur(4px)', transition: 'background 250ms' }}
+      onClick={onClose}
+    >
+      <div
+        className="bg-black border border-border w-full sm:max-w-sm"
+        style={{ transform: mounted ? 'translateY(0)' : 'translateY(100%)', transition: 'transform 300ms cubic-bezier(0.32,0.72,0,1)' }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-5 border-b border-border">
+          <h2 className="font-raleway font-semibold text-white text-xs uppercase tracking-widest truncate pr-4">
+            {entry.projekt_name ?? 'Zuteilung'}
+          </h2>
+          <button onClick={onClose} className="text-muted hover:text-white transition-colors shrink-0">
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
+              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Info */}
+        <div className="px-6 py-5 space-y-4">
+          <InfoRow
+            label="Zeitraum"
+            value={`${fmt(parseLocalDate(entry.datum_von))} – ${fmt(parseLocalDate(entry.datum_bis))}`}
+          />
+          <InfoRow label="Art" value={entry.is_internal ? 'Intern' : 'Extern'} />
+          {entry.notiz && <InfoRow label="Notiz" value={entry.notiz} />}
+        </div>
+
+        {/* Aktionen */}
+        <div className="px-6 pb-6 space-y-2">
+          {onNavigate && (
+            <button
+              onClick={onNavigate}
+              className="w-full bg-white text-black py-3.5 font-raleway font-semibold text-[10px] uppercase tracking-widest hover:bg-muted transition-colors"
+            >
+              Zum Projekt
+            </button>
+          )}
+          {deleteError && (
+            <p className="text-red-400 text-xs font-opensans border border-red-400/30 px-4 py-3">{deleteError}</p>
+          )}
+          {confirming ? (
+            <div className="space-y-2">
+              <p className="font-opensans text-xs text-muted text-center pt-1">Zuteilung wirklich entfernen?</p>
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    setDeleting(true)
+                    setDeleteError(null)
+                    try { await onDelete(entry.id) }
+                    catch (err) {
+                      const msg = err instanceof Error && err.message.includes('42501')
+                        ? 'Keine Berechtigung zum Entfernen.'
+                        : 'Entfernen fehlgeschlagen. Bitte nochmal versuchen.'
+                      setDeleteError(msg)
+                      setDeleting(false)
+                    }
+                  }}
+                  disabled={deleting}
+                  className="flex-1 border border-red-400/40 text-red-400 py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:bg-red-400 hover:text-black transition-colors disabled:opacity-40"
+                >
+                  {deleting ? 'Entfernen…' : 'Entfernen'}
+                </button>
+                <button
+                  onClick={() => setConfirming(false)}
+                  className="flex-1 border border-border text-muted py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:text-white transition-colors"
+                >
+                  Abbrechen
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirming(true)}
+              className="w-full border border-border text-muted py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:border-red-400/40 hover:text-red-400 transition-colors"
+            >
+              Zuteilung entfernen
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -785,10 +1095,24 @@ function InfoRow({ label, value }: { label: string; value: string }) {
     </div>
   )
 }
-function ClockIcon({ className }: { className?: string }) {
+function LockIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
+      <rect x="3" y="11" width="18" height="11" rx="1" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  )
+}
+function ChevronLeft({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="15 18 9 12 15 6" />
+    </svg>
+  )
+}
+function ChevronRight({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="9 18 15 12 9 6" />
     </svg>
   )
 }

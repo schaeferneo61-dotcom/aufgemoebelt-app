@@ -12,7 +12,7 @@ interface ProSonataProject {
   [key: string]: unknown
 }
 
-// ── Hilfsfunktionen (identisch zu src/lib/prosonata.ts) ────────
+// ── Hilfsfunktionen ────────────────────────────────────────────
 function mapStatus(p: ProSonataProject): 'aktiv' | 'pausiert' | 'abgeschlossen' {
   if (p.projectDateEnd) {
     const yesterday = new Date()
@@ -29,7 +29,13 @@ function mapTyp(p: ProSonataProject): 'intern' | 'extern' {
   return /\(\s*intern\s*\)/i.test(p.customerName ?? '') ? 'intern' : 'extern'
 }
 
-async function fetchAllPages(apiKey: string, appID: string, extraParams = ''): Promise<ProSonataProject[]> {
+// Alle Seiten einer ProSonata-Abfrage laden, mit AbortController-Timeout pro Request
+async function fetchAllPages(
+  apiKey: string,
+  appID: string,
+  extraParams = '',
+  timeoutMs = 40_000,
+): Promise<ProSonataProject[]> {
   const results: ProSonataProject[] = []
   let page = 1
   let lastPage = 1
@@ -39,27 +45,34 @@ async function fetchAllPages(apiKey: string, appID: string, extraParams = ''): P
     Accept: 'application/json',
   }
   if (appID) headers['X-APP-ID'] = appID.trim()
+
   do {
-    const res = await fetch(
-      `https://aufgemoebelt.prosonata.software/api/v1/projects?page=${page}&per_page=100${extraParams}`,
-      { headers }
-    )
-    if (!res.ok) throw new Error(`ProSonata API ${res.status}: ${res.statusText}`)
-    const json = await res.json()
-    results.push(...(json.data ?? []))
-    lastPage = json.meta?.pagination?.last_page ?? 1
-    page++
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const res = await fetch(
+        `https://aufgemoebelt.prosonata.software/api/v1/projects?page=${page}&per_page=100${extraParams}`,
+        { headers, signal: controller.signal },
+      )
+      if (!res.ok) throw new Error(`ProSonata API ${res.status}: ${res.statusText}`)
+      const json = await res.json()
+      results.push(...(json.data ?? []))
+      lastPage = json.meta?.pagination?.last_page ?? 1
+      page++
+    } finally {
+      clearTimeout(timer)
+    }
   } while (page <= lastPage)
+
   return results
 }
 
-// ── Maximale Laufzeit: 60 Sekunden ────────────────────────────
+// ── Maximale Laufzeit: 60 s (erfordert Vercel Pro) ─────────────
 export const config = { maxDuration: 60 }
 
 // ── Handler ───────────────────────────────────────────────────
 export default async function handler(req: any, res: any) {
   if (req.method === 'GET') {
-    // Automatischer Cron: CRON_SECRET prüfen (Vercel setzt es automatisch)
     const cronSecret = process.env.CRON_SECRET
     if (cronSecret) {
       const auth = req.headers['authorization']
@@ -68,18 +81,15 @@ export default async function handler(req: any, res: any) {
       }
     }
   } else if (req.method !== 'POST') {
-    // POST = manueller Trigger aus der App (kein Secret nötig)
     return res.status(405).json({ error: 'Method Not Allowed' })
   }
 
-  // API-Key und App-ID aus Umgebungsvariablen
   const apiKey = process.env.PROSONATA_API_KEY
   if (!apiKey) {
-    return res.status(500).json({ error: 'PROSONATA_API_KEY ist nicht konfiguriert. Bitte in Vercel → Settings → Environment Variables eintragen.' })
+    return res.status(500).json({ error: 'PROSONATA_API_KEY fehlt in den Umgebungsvariablen.' })
   }
   const appID = process.env.PROSONATA_APP_ID ?? ''
 
-  // Supabase-Client (server-seitig)
   const supabaseUrl = process.env.VITE_SUPABASE_URL
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY
   if (!supabaseUrl || !supabaseKey) {
@@ -88,24 +98,29 @@ export default async function handler(req: any, res: any) {
   const supabase = createClient(supabaseUrl, supabaseKey)
 
   try {
-    const [active, inactive] = await Promise.all([
-      fetchAllPages(apiKey, appID),
-      fetchAllPages(apiKey, appID, '&projectStatus=0'),
-    ])
+    // Aktive und inaktive Projekte nacheinander laden (nicht parallel) damit
+    // der Gesamt-Timeout nicht schon nach dem ersten Fetch aufgebraucht ist
+    console.log('[Sync] Lade aktive Projekte…')
+    const active = await fetchAllPages(apiKey, appID)
+    console.log(`[Sync] ${active.length} aktive Projekte`)
 
-    // Deduplizieren
+    console.log('[Sync] Lade weitere Projekte (projectStatus=0)…')
+    const inactive = await fetchAllPages(apiKey, appID, '&projectStatus=0')
+    console.log(`[Sync] ${inactive.length} weitere Projekte`)
+
+    // Deduplizieren anhand projectID
     const seen = new Set<string>()
     const all: ProSonataProject[] = []
     for (const p of [...active, ...inactive]) {
       const id = String(p.projectID)
       if (!seen.has(id)) { seen.add(id); all.push(p) }
     }
+    console.log(`[Sync] ${all.length} Projekte gesamt (nach Deduplizierung)`)
 
     if (all.length === 0) {
-      return res.status(200).json({ ok: true, count: 0, message: 'Keine Projekte gefunden.' })
+      return res.status(200).json({ ok: true, count: 0, message: 'Keine Projekte von ProSonata erhalten.' })
     }
 
-    // In Supabase speichern (in Batches)
     const upsertData = all.map(p => ({
       name: p.projectName,
       beschreibung: p.projectNo ? `Nr. ${p.projectNo}` : null,
@@ -116,20 +131,37 @@ export default async function handler(req: any, res: any) {
       typ: mapTyp(p),
     }))
 
-    const BATCH = 500
+    // Supabase-Upsert in kleinen Batches – Fehler eines Batches bricht nicht alle ab
+    const BATCH = 200
+    let saved = 0
+    const batchErrors: string[] = []
+
     for (let i = 0; i < upsertData.length; i += BATCH) {
+      const slice = upsertData.slice(i, i + BATCH)
       const { error } = await supabase
         .from('projects')
-        .upsert(upsertData.slice(i, i + BATCH), { onConflict: 'prosonata_id' })
-      if (error) throw new Error('Supabase: ' + error.message)
+        .upsert(slice, { onConflict: 'prosonata_id' })
+      if (error) {
+        const msg = `Batch ${Math.floor(i / BATCH) + 1}: ${error.message}`
+        console.error('[Sync]', msg)
+        batchErrors.push(msg)
+      } else {
+        saved += slice.length
+      }
     }
 
     const syncedAt = new Date().toISOString()
-    console.log(`[ProSonata Auto-Sync] ${all.length} Projekte synchronisiert um ${syncedAt}`)
+    console.log(`[Sync] ${saved}/${all.length} gespeichert um ${syncedAt}`)
 
-    return res.status(200).json({ ok: true, count: all.length, synced_at: syncedAt })
+    if (batchErrors.length > 0) {
+      // 207 = Partial Content – manche Batches fehlgeschlagen
+      return res.status(207).json({ ok: false, count: saved, synced_at: syncedAt, errors: batchErrors })
+    }
+
+    return res.status(200).json({ ok: true, count: saved, synced_at: syncedAt })
   } catch (err) {
-    console.error('[ProSonata Auto-Sync] Fehler:', String(err))
-    return res.status(500).json({ error: String(err) })
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[Sync] Kritischer Fehler:', msg)
+    return res.status(500).json({ error: msg })
   }
 }

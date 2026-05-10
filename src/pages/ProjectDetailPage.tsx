@@ -18,6 +18,14 @@ function canEdit(item: ItemWithProduct, userId: string | undefined, isAdminOrPro
   return Date.now() - new Date(item.created_at).getTime() < 10 * 60 * 1000
 }
 
+function fmtDateTime(iso: string) {
+  const d = new Date(iso)
+  const date = d.toLocaleDateString('de-AT')
+  const h = d.getHours().toString().padStart(2, '0')
+  const m = d.getMinutes().toString().padStart(2, '0')
+  return `${date} · ${h}:${m}`
+}
+
 export function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>()
   const { isAdminOrProjektleiter, profile, user } = useAuth()
@@ -30,6 +38,7 @@ export function ProjectDetailPage() {
   const [editMenge, setEditMenge] = useState('')
   const [syncNote, setSyncNote] = useState<string | null>(null)
   const [isOnline, setIsOnline] = useState(navigator.onLine)
+  const [profileMap, setProfileMap] = useState<Map<string, string>>(new Map())
 
   const load = useCallback(async (showSpinner = false) => {
     if (!id) return
@@ -107,6 +116,13 @@ export function ProjectDetailPage() {
       window.removeEventListener('online', onOnline)
       window.removeEventListener('offline', onOffline)
     }
+  }, [])
+
+  // Profil-Namen einmalig laden für „Hinzugefügt von"-Anzeige
+  useEffect(() => {
+    supabase.from('profiles').select('id, name').then(({ data }) => {
+      if (data) setProfileMap(new Map(data.map(p => [p.id, p.name ?? ''])))
+    })
   }, [])
 
   const deleteItem = async (itemId: string) => {
@@ -324,6 +340,7 @@ export function ProjectDetailPage() {
                   deletingId={deletingId}
                   editingItem={editingItem}
                   editMenge={editMenge}
+                  profileMap={profileMap}
                   onDelete={deleteItem}
                   onEditStart={(id, menge) => { setEditingItem(id); setEditMenge(String(menge)) }}
                   onEditSave={saveEditMenge}
@@ -381,6 +398,7 @@ function ItemRow({
   deletingId,
   editingItem,
   editMenge,
+  profileMap,
   onDelete,
   onEditStart,
   onEditSave,
@@ -392,6 +410,7 @@ function ItemRow({
   deletingId: string | null
   editingItem: string | null
   editMenge: string
+  profileMap: Map<string, string>
   onDelete: (id: string) => void
   onEditStart: (id: string, menge: number) => void
   onEditSave: (id: string) => void
@@ -400,6 +419,12 @@ function ItemRow({
 }) {
   const isEditing = editingItem === item.id
   const gesamtVK = item.menge * (item.product?.vk_preis ?? 0)
+  const addedByName = item.hinzugefuegt_von ? (profileMap.get(item.hinzugefuegt_von) ?? null) : null
+  const addedInfo = item._offline
+    ? 'Ausstehend – noch nicht gespeichert'
+    : addedByName
+      ? `Von ${addedByName} · ${fmtDateTime(item.created_at)}`
+      : fmtDateTime(item.created_at)
 
   return (
     <div className={`px-4 py-4 hover:bg-surface transition-colors ${item._offline ? 'opacity-70' : ''}`}>
@@ -415,6 +440,7 @@ function ItemRow({
               {[item.product?.staerke_mm && `${item.product.staerke_mm} mm`, item.product?.masse_mm].filter(Boolean).join(' · ')}
             </p>
             {item.notiz && <p className="text-xs text-muted font-opensans italic mt-0.5">{item.notiz}</p>}
+            <p className="text-[11px] text-muted/60 font-opensans mt-1">{addedInfo}</p>
           </div>
           {canEditItem && (
             <button
@@ -478,6 +504,7 @@ function ItemRow({
             ].filter(Boolean).join(' · ')}
           </p>
           {item.notiz && <p className="text-xs text-muted font-opensans italic mt-0.5">{item.notiz}</p>}
+          <p className="text-[11px] text-muted/60 font-opensans mt-1">{addedInfo}</p>
         </div>
 
         {/* Menge editierbar */}

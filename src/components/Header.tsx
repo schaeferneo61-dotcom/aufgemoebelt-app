@@ -14,6 +14,7 @@ export function Header() {
   const navigate = useNavigate()
   const [isOnline, setIsOnline] = useState(navigator.onLine)
   const [pendingCount, setPendingCount] = useState(getQueueCount)
+  const [signingOut, setSigningOut] = useState(false)
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true)
@@ -33,8 +34,14 @@ export function Header() {
   }, [])
 
   const handleSignOut = async () => {
-    await signOut()
-    navigate('/login')
+    if (signingOut) return
+    setSigningOut(true)
+    try {
+      await signOut()
+      navigate('/login')
+    } catch {
+      setSigningOut(false)
+    }
   }
 
   const rolleDisplay = profile?.rolle ? (ROLLE_DISPLAY[profile.rolle] ?? profile.rolle) : null
@@ -79,9 +86,10 @@ export function Header() {
           {user && (
             <button
               onClick={handleSignOut}
-              className="font-raleway text-[10px] tracking-widest uppercase text-white border border-border px-3 py-1.5 hover:bg-white hover:text-black transition-colors whitespace-nowrap"
+              disabled={signingOut}
+              className="font-raleway text-[10px] tracking-widest uppercase text-white border border-border px-3 py-1.5 hover:bg-white hover:text-black transition-colors whitespace-nowrap disabled:opacity-40"
             >
-              Abmelden
+              {signingOut ? '…' : 'Abmelden'}
             </button>
           )}
         </div>

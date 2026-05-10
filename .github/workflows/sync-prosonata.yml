@@ -1,0 +1,61 @@
+name: ProSonata Auto-Sync
+
+on:
+  schedule:
+    # Alle 5 Minuten (GitHub-Minimum)
+    - cron: '*/5 * * * *'
+  # Manuell auslösbar
+  workflow_dispatch:
+
+# Nur ein Sync gleichzeitig – kein gegenseitiges Cancellen
+concurrency:
+  group: prosonata-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: ProSonata → Supabase Sync
+        run: |
+          MAX_RETRIES=2
+          RETRY=0
+          SUCCESS=false
+
+          while [ $RETRY -le $MAX_RETRIES ]; do
+            if [ $RETRY -gt 0 ]; then
+              echo "Retry $RETRY/$MAX_RETRIES nach 15 Sekunden…"
+              sleep 15
+            fi
+
+            body=$(curl -s \
+              --connect-timeout 15 \
+              --max-time 90 \
+              -w "\nHTTP_STATUS:%{http_code}" \
+              -X POST \
+              -H "Content-Type: application/json" \
+              https://warenwirtschaft-blush.vercel.app/api/sync-prosonata)
+
+            http_status=$(echo "$body" | tail -1 | sed 's/HTTP_STATUS://')
+            response_body=$(echo "$body" | sed '$d')
+
+            echo "--- Versuch $((RETRY + 1)) ---"
+            echo "HTTP Status: $http_status"
+            echo "Response: $response_body"
+
+            # 200 = vollständig, 207 = teilweise erfolgreich
+            if [ "$http_status" = "200" ] || [ "$http_status" = "207" ]; then
+              echo "Sync abgeschlossen (Status $http_status)"
+              SUCCESS=true
+              break
+            fi
+
+            RETRY=$((RETRY + 1))
+          done
+
+          if [ "$SUCCESS" = "false" ]; then
+            echo "Sync fehlgeschlagen nach $((MAX_RETRIES + 1)) Versuchen"
+            exit 1
+          fi
