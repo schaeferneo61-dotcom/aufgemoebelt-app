@@ -302,8 +302,10 @@ function DispoMatrix({ days }: { days: Date[] }) {
   }
 
   async function deleteSingleDay(entry: DispoEintrag, day: string) {
-    if (entry.datum_von === entry.datum_bis || day === entry.datum_von && day === entry.datum_bis) {
-      return deleteEntry(entry.id)
+    if (entry.datum_von === entry.datum_bis) {
+      const { error } = await supabase.from('dispo_eintraege').delete().eq('id', entry.id)
+      if (error) throw new Error(error.message)
+      return
     }
     if (day === entry.datum_von) {
       const { error } = await supabase.from('dispo_eintraege').update({ datum_von: nextDay(day) }).eq('id', entry.id)
@@ -805,7 +807,7 @@ function EntryDetailModal({ entry, personName, tapDate, onClose, onDelete, onDel
               <div className="flex gap-2">
                 <button onClick={() => handleDelete(false)} disabled={deleting}
                   className="flex-1 border border-red-400/40 text-red-400 py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:bg-red-400 hover:text-black transition-colors disabled:opacity-40">
-                  {deleting ? 'Löschen…' : 'Gesamte Zuteilung'}
+                  {deleting ? 'Löschen…' : isMultiDay ? 'Gesamte Zuteilung' : 'Löschen'}
                 </button>
                 <button onClick={() => setConfirming(false)}
                   className="flex-1 border border-border text-muted py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:text-white transition-colors">
@@ -1135,7 +1137,7 @@ function MeineDispoDetailModal({ entry, tapDate, onClose, onDelete, onDeleteDay,
                   disabled={deleting}
                   className="flex-1 border border-red-400/40 text-red-400 py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:bg-red-400 hover:text-black transition-colors disabled:opacity-40"
                 >
-                  {deleting ? 'Entfernen…' : 'Gesamte Zuteilung'}
+                  {deleting ? 'Entfernen…' : isMultiDay ? 'Gesamte Zuteilung' : 'Entfernen'}
                 </button>
                 <button onClick={() => setConfirming(false)}
                   className="flex-1 border border-border text-muted py-2.5 font-raleway text-[10px] uppercase tracking-widest hover:text-white transition-colors">
